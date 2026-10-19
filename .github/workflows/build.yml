@@ -18,13 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: make test build
-      - run: |
-          cp README.md LICENSE config.example.yaml settings.example.json dist/
-          cd dist
-          sha256sum cpa-quota-guard.so guard-state > BINARY_SHA256SUMS
-          zip cpa-quota-guard_0.1.0_linux_amd64.zip cpa-quota-guard.so cpa-quota-guard.h guard-state README.md LICENSE config.example.yaml settings.example.json BINARY_SHA256SUMS
-          sha256sum cpa-quota-guard_0.1.0_linux_amd64.zip > checksums.txt
+      - run: make test package
       - uses: actions/upload-artifact@v4
         with:
           name: cpa-quota-guard-linux-amd64

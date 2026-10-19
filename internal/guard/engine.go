@@ -126,19 +126,30 @@ func (e *Engine) Tick(ctx context.Context, now int64, fresh bool) error {
 		}
 		obs := Observation{Name: entry.Name, Provider: entry.Provider, AuthIndex: entry.AuthIndex, Identity: a.Snapshot.Identity, Reasons: []string{}, UpdatedMS: now}
 		oldObs := previous.Observations[entry.Name]
-		if !fresh && oldObs.Identity == a.Snapshot.Identity && oldObs.Sample != nil && now-oldObs.Sample.ObservedMS <= 90000 && oldObs.Sample.ObservedMS <= now {
+		recent := oldObs.Identity == a.Snapshot.Identity && oldObs.Sample != nil && now-oldObs.Sample.ObservedMS <= 90000 && oldObs.Sample.ObservedMS <= now+1000
+		retained := false
+		if !fresh && recent {
+			retained = true
 			obs.Sample = oldObs.Sample
 		} else {
 			s, err := e.backend.Probe(ctx, a)
 			if err != nil {
-				obs.Error = "quota probe unavailable"
+				if recent {
+					// A transient management API failure must not discard an identity-bound
+					// sample that is still within the same freshness bound used for decisions.
+					obs.Sample = oldObs.Sample
+					obs.Error = "quota probe unavailable; retained recent sample"
+					retained = true
+				} else {
+					obs.Error = "quota probe unavailable"
+				}
 			} else {
 				obs.Sample = &s
 			}
 		}
 		// CPAMP panel snapshots are a best-effort display adapter. They never supply
 		// the evidence used by protection and are disabled in observe mode.
-		if e.apply && fresh && obs.Sample != nil {
+		if e.apply && fresh && obs.Sample != nil && !retained {
 			if publisher, ok := e.backend.(interface {
 				Publish(context.Context, Account, Sample) error
 			}); ok {

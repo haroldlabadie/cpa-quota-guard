@@ -118,6 +118,50 @@ func TestCodexBoundaryRecoveryAndWeekly(t *testing.T) {
 		t.Fatal("weekly independent")
 	}
 }
+func TestTransientProbeFailureRetainsRecentSample(t *testing.T) {
+	f := &fakeBackend{raw: rawAuth("codex"), mtime: 10, sample: quota(9)}
+	e := engine(t, f)
+	tick(t, e)
+	if f.patches != 0 {
+		t.Fatal("healthy sample must not patch")
+	}
+	f.probeErr = true
+	if err := e.Tick(context.Background(), now+30000, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.raw["disabled"] == true || f.patches != 0 {
+		t.Fatal("transient probe failure discarded a recent safe sample")
+	}
+	s, _, _, _ := e.View()
+	obs := s.Observations["test.json"]
+	if obs.Sample == nil || obs.Sample.ObservedMS != now || obs.Error == "" {
+		t.Fatalf("retained sample not visible: %#v", obs)
+	}
+	f.sample = quota(8)
+	f.sample.ObservedMS = now + 91000
+	f.probeErr = false
+	if err := e.Tick(context.Background(), now+91000, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.raw["disabled"] != true || f.patches != 1 {
+		t.Fatal("expired sample must not authorize recovery")
+	}
+}
+func TestTransientProbeFailureNeverRestores(t *testing.T) {
+	f := &fakeBackend{raw: rawAuth("codex"), mtime: 10, sample: quota(8)}
+	e := engine(t, f)
+	tick(t, e)
+	if f.raw["disabled"] != true {
+		t.Fatal("unsafe sample must protect")
+	}
+	f.probeErr = true
+	if err := e.Tick(context.Background(), now+30000, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.raw["disabled"] != true || f.patches != 1 {
+		t.Fatal("probe failure must retain protection")
+	}
+}
 func TestUnknownAndExpiredNeverRecover(t *testing.T) {
 	for _, kind := range []string{"probe", "expired", "missing", "stale", "future"} {
 		t.Run(kind, func(t *testing.T) {

@@ -129,7 +129,7 @@ func (b *backend) call(ctx context.Context, path string, payload any, method str
 	}
 	req.Header.Set("Authorization", "Bearer "+b.key)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "cpa-quota-guard/0.1.0")
+	req.Header.Set("User-Agent", "cpa-quota-guard/"+pluginVersion)
 	response, err := b.client.Do(req)
 	if err != nil {
 		return errors.New("management transport failure")

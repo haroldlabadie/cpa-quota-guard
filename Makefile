@@ -13,5 +13,5 @@ build:
 package: build
 	cp README.md LICENSE config.example.yaml settings.example.json dist/
 	cd dist && sha256sum cpa-quota-guard.so guard-state > BINARY_SHA256SUMS
-	cd dist && zip cpa-quota-guard_0.1.0_linux_amd64.zip cpa-quota-guard.so cpa-quota-guard.h guard-state README.md LICENSE config.example.yaml settings.example.json BINARY_SHA256SUMS
-	cd dist && sha256sum cpa-quota-guard_0.1.0_linux_amd64.zip > checksums.txt
+	cd dist && zip cpa-quota-guard_0.1.1_linux_amd64.zip cpa-quota-guard.so cpa-quota-guard.h guard-state README.md LICENSE config.example.yaml settings.example.json BINARY_SHA256SUMS
+	cd dist && sha256sum cpa-quota-guard_0.1.1_linux_amd64.zip > checksums.txt

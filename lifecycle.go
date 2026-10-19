@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const pluginVersion = "0.1.0"
+const pluginVersion = "0.1.1"
 const pluginID = "cpa-quota-guard"
 
 type bootstrap struct {

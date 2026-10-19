@@ -1,12 +1,12 @@
 # CPA 额度保护
 
-独立的 CPA 原生 Go C ABI 插件，为显式白名单账号保留额度。首版 `0.1.0`，Linux amd64，ABI 1、RPC schema 6；宿主最低接口基线为 CPA v8.0.33 / `2422c6b`。它不生成模型请求，不管理预热计划，可单独安装，也可与 [cpa-warmup](https://github.com/haroldlabadie/cpa-warmup) 同时运行。
+独立的 CPA 原生 Go C ABI 插件，为显式白名单账号保留额度。当前 `0.1.1`，Linux amd64，ABI 1、RPC schema 6；宿主最低接口基线为 CPA v8.0.33 / `2422c6b`。它不生成模型请求，不管理预热计划，可单独安装，也可与 [cpa-warmup](https://github.com/haroldlabadie/cpa-warmup) 同时运行。
 
 ## 行为
 
 - Codex：五小时剩余 ≤8% 或每周剩余 ≤3% 时禁用整凭证。所有新鲜相关窗口都高于阈值后，才恢复可证明属于本插件的限制。
 - Antigravity：Gemini 与 Claude/GPT 两族分别保护，合并 `excluded_models`；保留原有人工排除，不因一族额度不足停用另一族。
-- 未知、缺桶、过期或探测失败的额度按需要保护处理，绝不假设剩余 100%。Free 等缺少五小时窗口的 Codex 无法通过此保护策略的安全恢复条件。
+- 未知、缺桶、过期或探测失败的额度按需要保护处理，绝不假设剩余 100%。单次管理接口瞬断时，同一身份且 90 秒内的既有样本继续参与判断并保留错误；超过新鲜度或身份变化即失败关闭。Free 等缺少五小时窗口的 Codex 无法通过此保护策略的安全恢复条件。
 - 只操作配置白名单。停用插件、关闭或删除规则均保留已有停用和模型排除，避免停守护成为绕过保护的方式。
 - 人工停用不自动启用。丢失本地所有权、同名换账号、保护字段变化或无 Token / 其他字段变化的同内容重写，会释放自动恢复资格；Token-only 刷新和无关的 prefix/note 等变化保留所有权。
 
@@ -14,7 +14,7 @@
 
 ## 安装
 
-下载对应版本的 `cpa-quota-guard_0.1.0_linux_amd64.zip`，按同 Release 的 `checksums.txt` 校验；包内另含 `BINARY_SHA256SUMS`。zip 根目录只有一个 `.so`，兼容 CPA Plugin Store。`.so` 和数据目录放入 CPA 插件挂载目录，勿覆盖其他插件。
+下载对应版本的 `cpa-quota-guard_0.1.1_linux_amd64.zip`，按同 Release 的 `checksums.txt` 校验；包内另含 `BINARY_SHA256SUMS`。zip 根目录只有一个 `.so`，兼容 CPA Plugin Store。`.so` 和数据目录放入 CPA 插件挂载目录，勿覆盖其他插件。
 
 ```sh
 install -d -m 0700 /CLIProxyAPI/plugins/cpa-quota-guard-data
