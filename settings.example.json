@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "rules": [
+    {"email":"person@example.invalid","provider":"codex","enabled":true,"reserve_five_hour":8,"reserve_weekly":3},
+    {"email":"person@example.invalid","provider":"antigravity","enabled":true,"reserve_five_hour":8,"reserve_weekly":3}
+  ]
+}

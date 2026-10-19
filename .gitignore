@@ -1,0 +1,6 @@
+/dist/
+*.so
+*.h
+/guard-state
+/data/
+coverage.out

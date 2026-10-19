@@ -1,0 +1,14 @@
+# 合并至现有 CPA config.yaml，不覆盖其他 plugins.configs 条目。
+plugins:
+  enabled: true
+  dir: /CLIProxyAPI/plugins
+  configs:
+    cpa-quota-guard:
+      enabled: true
+      priority: 0
+      mode: observe
+      data_dir: /CLIProxyAPI/plugins/cpa-quota-guard-data
+      secret_file: /CLIProxyAPI/plugins/cpa-quota-guard-data/management-key.txt
+      cpamp_url: http://cpamp:18317
+      check_seconds: 20
+      probe_seconds: 20
