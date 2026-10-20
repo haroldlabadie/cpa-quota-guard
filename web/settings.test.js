@@ -35,12 +35,20 @@ test("conflict preserves the edited rule and does not reload it", async () => {
   a.fail(); const count = a.requests.length; await a.get("save").onclick(); assert.equal(a.requests.length, count + 1); assert.equal(email.value, "draft@example.invalid"); assert.equal(a.get("message").textContent, "conflict");
 });
 test("untrusted credential names and reasons render as text", async () => {
-  const a = app(); await a.get("connect").onclick(); const row = a.get("observations").children[0]; assert.match(row.children[0].textContent, /^<img/); assert.match(row.children[3].textContent, /<script>/);
+  const a = app(); await a.get("connect").onclick(); const row = a.get("observations").children[0]; assert.equal(row.children[0].children[0].textContent, "<img onerror=alert(1)>"); assert.match(row.children[3].textContent, /<script>/);
 });
 
 test("transaction, orphan and conflict status are distinguishable", async () => {
   const a = app(); await a.get("connect").onclick(); const row = a.get("observations").children[0];
-  assert.equal(row.children[1].textContent, "所有权孤儿，待人工决定");
+  assert.equal(row.children[1].children[0].textContent, "所有权孤儿");
   assert.match(row.children[3].textContent, /事务 tx-1 conflict/);
   assert.match(row.children[3].textContent, /owner marker/);
+});
+
+test("design reflects the blue admin system", () => {
+  const html = fs.readFileSync(__dirname + "/settings.html", "utf8");
+  assert.match(html, /--accent:#265fae/);
+  assert.match(html, /data-label|data-label=/);
+  assert.match(html, /@media\(max-width:520px\)/);
+  assert.match(html, /prefers-reduced-motion:reduce/);
 });
