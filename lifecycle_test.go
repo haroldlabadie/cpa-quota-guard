@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/haroldlabadie/cpa-quota-guard/internal/guard"
 	"net/http"
@@ -89,6 +90,19 @@ func TestManagementSettingsRevisionAndUnknownFields(t *testing.T) {
 	}
 	if r = manage(t, "GET", managementBase+"/status", nil, ""); strings.Contains(string(r.Body), "TEST_KEY") {
 		t.Fatal("secret leaked")
+	}
+}
+
+func TestAccountInventoryProjectionExcludesSecrets(t *testing.T) {
+	old := accountInventory
+	accountInventory = func(*backend, context.Context) ([]guard.AccountOption, error) {
+		return []guard.AccountOption{{Name: "codex-person@example.invalid.json", Provider: "codex", Email: "person@example.invalid"}}, nil
+	}
+	t.Cleanup(func() { accountInventory = old })
+	setupInstance(t)
+	r := manage(t, "GET", managementBase+"/accounts", nil, "")
+	if r.StatusCode != 200 || strings.Contains(string(r.Body), "auth_index") || !strings.Contains(string(r.Body), "person@example.invalid") {
+		t.Fatalf("unexpected account projection: %s", r.Body)
 	}
 }
 func TestPublicPageOnlyStaticShell(t *testing.T) {

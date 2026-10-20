@@ -51,7 +51,7 @@ func TestExampleMatchesHostConfigurationContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	item, ok := cfg.Plugins.Configs[pluginID]
-	if !ok || !cfg.Plugins.Enabled || cfg.Plugins.Dir != "/CLIProxyAPI/plugins" || item.Version != "0.2.0" || !item.Enabled || item.Mode != "observe" || item.CheckSeconds != 20 || item.ProbeSeconds != 20 {
+	if !ok || !cfg.Plugins.Enabled || cfg.Plugins.Dir != "/CLIProxyAPI/plugins" || item.Version != pluginVersion || !item.Enabled || item.Mode != "observe" || item.CheckSeconds != 20 || item.ProbeSeconds != 20 {
 		t.Fatal("invalid host plugin example")
 	}
 	readme, err := os.ReadFile("README.md")

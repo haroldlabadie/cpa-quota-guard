@@ -18,6 +18,9 @@ import (
 )
 
 type hostCaller func(string, any, any) error
+
+var accountInventory = func(b *backend, ctx context.Context) ([]guard.AccountOption, error) { return b.Accounts(ctx) }
+
 type backend struct {
 	host      hostCaller
 	base, key string
@@ -60,6 +63,20 @@ func (b *backend) List(ctx context.Context) ([]guard.Entry, error) {
 		rows = append(rows, e)
 	}
 	return rows, nil
+}
+
+// Accounts is a read-only UI projection of the host credential inventory.
+// It never reads raw credential JSON and therefore cannot expose tokens.
+func (b *backend) Accounts(ctx context.Context) ([]guard.AccountOption, error) {
+	entries, err := b.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]guard.AccountOption, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, guard.AccountOption{Name: entry.Name, Provider: entry.Provider, Email: entry.Email, Disabled: entry.Disabled})
+	}
+	return out, nil
 }
 func (b *backend) Read(ctx context.Context, e guard.Entry) (guard.Account, error) {
 	var out struct {

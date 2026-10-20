@@ -1,6 +1,6 @@
 # CPA 额度保护
 
-独立的 CPA 原生 Go C ABI 插件，为显式白名单账号保留额度。当前 `0.2.0`，Linux amd64，ABI 1、RPC schema 6；宿主最低接口基线为 CPA v8.0.33 / `2422c6b`。它不生成模型请求，不管理预热计划，可单独安装，也可与 [cpa-warmup](https://github.com/haroldlabadie/cpa-warmup) 同时运行。
+独立的 CPA 原生 Go C ABI 插件，为显式白名单账号保留额度。当前 `0.3.0`，Linux amd64，ABI 1、RPC schema 6；宿主最低接口基线为 CPA v8.0.33 / `2422c6b`。它不生成模型请求，不管理预热计划，可单独安装，也可与 [cpa-warmup](https://github.com/haroldlabadie/cpa-warmup) 同时运行。
 
 ## 行为
 
@@ -15,11 +15,11 @@
 
 ## 安装
 
-下载对应版本的 `cpa-quota-guard_0.2.0_linux_amd64.zip`，按同 Release 的 `checksums.txt` 校验；包内另含 `BINARY_SHA256SUMS`。zip 根目录只有一个 `.so`，兼容 CPA Plugin Store。`.so` 和数据目录放入 CPA 插件挂载目录，勿覆盖其他插件。
+下载对应版本的 `cpa-quota-guard_0.3.0_linux_amd64.zip`，按同 Release 的 `checksums.txt` 校验；包内另含 `BINARY_SHA256SUMS`。zip 根目录只有一个 `.so`，兼容 CPA Plugin Store。`.so` 和数据目录放入 CPA 插件挂载目录，勿覆盖其他插件。
 
 ```sh
 install -d -m 0700 /CLIProxyAPI/plugins/cpa-quota-guard-data
-install -m 0644 cpa-quota-guard.so /CLIProxyAPI/plugins/cpa-quota-guard-v0.2.0.so
+install -m 0644 cpa-quota-guard.so /CLIProxyAPI/plugins/cpa-quota-guard-v0.3.0.so
 install -m 0600 settings.example.json /CLIProxyAPI/plugins/cpa-quota-guard-data/settings.json
 ```
 
@@ -33,7 +33,7 @@ plugins:
   dir: /CLIProxyAPI/plugins
   configs:
     cpa-quota-guard:
-      version: 0.2.0
+      version: 0.3.0
       enabled: true
       priority: 0
       mode: observe
@@ -54,9 +54,11 @@ plugins:
 
 不要让两份守护同时修改相同账号。停止插件会取消 HTTP、等待 worker 退出，再释放 `worker.lock`；宿主热更新须调用 `plugin.quiesce`，最终 shutdown 同样幂等停止。
 
-## 管理页面与接口
+## 管理页面
 
-CPA 插件菜单的“额度保护”提供账号邮箱、供应商、保护开关、五小时/每周保留百分比、账号剩余及原因。登录门面自动复用同源 CPAMP 管理会话，兼容 `enc::v1::` 与 `enc::v2::` 浏览器存储格式；没有可用会话时才显示手动输入。手动管理令牌默认记忆并保存到独立键 `cpa_quota_guard_mgmt_key`，验证成功后后续页面直接进入设置，页脚“退出管理会话”会清除保存值。设置页本身不显示管理令牌或连接管理控件。HTML 是不含账号/Key/状态的公开静态 shell，CSP nonce 限制脚本；敏感数据只经宿主鉴权管理路由读取。
+设置页把账号选择改为邮箱下拉，供应商与账号联动；规则和采样以响应式卡片展示，长文件名会截断为单行。账号接口只返回 name、provider、email、disabled 等非敏感字段，不返回 auth_index、Token 或完整凭证 JSON。登录门面自动复用同源 CPAMP 会话，手动令牌只保存在浏览器本地。
+
+CPA 插件菜单的“额度保护”提供账号邮箱、供应商、保护开关、五小时/每周保留百分比、账号剩余及原因。
 
 | 接口 | 用途 |
 | --- | --- |
@@ -64,6 +66,7 @@ CPA 插件菜单的“额度保护”提供账号邮箱、供应商、保护开�
 | `GET /v0/management/plugins/cpa-quota-guard/settings` | 规则及 ETag |
 | `PUT /v0/management/plugins/cpa-quota-guard/settings` | 必须带精确 `If-Match`，无匹配返回 412，缺失返回 428 |
 | `GET /v0/management/plugins/cpa-quota-guard/observations` | 脱敏账号身份摘要、额度、原因、最近动作 |
+| `GET /v0/management/plugins/cpa-quota-guard/accounts` | 非敏感账号投影：name、provider、email、disabled；不含 auth_index、Token 或完整凭证 |
 
 `observations` 的 schema 为 1，每个观测含 `name/provider/auth_index/identity/updated_ms/sample`，以及按状态出现的 `manual/action/transaction_id/transaction_phase/orphan_reason`；`sample` 为 `observed_ms/windows`。窗口保留 `id/kind/scope/remaining/end_ms/duration_ms`。消费方必须自行校验身份、完整性和 ≤90 秒新鲜度，不能把无观测当有可用额度。该接口是可选复用优化，warmup 也能独立采样。
 

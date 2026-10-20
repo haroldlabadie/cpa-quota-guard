@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/haroldlabadie/cpa-quota-guard/internal/guard"
 	"net/http"
@@ -25,7 +26,7 @@ type managementResponse struct {
 }
 
 func managementRegistration() any {
-	return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": managementBase + "/status"}, {"Method": "GET", "Path": managementBase + "/settings"}, {"Method": "PUT", "Path": managementBase + "/settings"}, {"Method": "GET", "Path": managementBase + "/observations"}}, "resources": []map[string]string{{"Path": "/settings", "Menu": "额度保护", "Description": "独立额度保护与人工所有权状态"}}}
+	return map[string]any{"routes": []map[string]string{{"Method": "GET", "Path": managementBase + "/status"}, {"Method": "GET", "Path": managementBase + "/settings"}, {"Method": "PUT", "Path": managementBase + "/settings"}, {"Method": "GET", "Path": managementBase + "/observations"}, {"Method": "GET", "Path": managementBase + "/accounts"}}, "resources": []map[string]string{{"Path": "/settings", "Menu": "额度保护", "Description": "独立额度保护与人工所有权状态"}}}
 }
 func managementJSON(code int, v any, etag string) ([]byte, error) {
 	b, err := json.Marshal(v)
@@ -60,6 +61,12 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case req.Method == "GET" && req.Path == managementBase+"/observations":
 		state, _, _, _ := i.engine.View()
 		return managementJSON(200, map[string]any{"schema": 1, "observations": state.Observations}, "")
+	case req.Method == "GET" && req.Path == managementBase+"/accounts":
+		entries, err := accountInventory(newBackend(hostCall, i.cfg.CPAMPURL, ""), context.Background())
+		if err != nil {
+			return managementJSON(503, map[string]string{"error": "credential inventory unavailable"}, "")
+		}
+		return managementJSON(200, map[string]any{"schema": 1, "accounts": entries}, "")
 	case req.Method == "GET" && req.Path == managementBase+"/settings":
 		i.mu.Lock()
 		defer i.mu.Unlock()

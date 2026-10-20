@@ -50,6 +50,15 @@ type Entry struct {
 	RuntimeOnly bool   `json:"runtime_only"`
 	Source      string `json:"source"`
 }
+
+// AccountOption is the non-secret inventory view exposed to the management UI.
+// It deliberately excludes auth_index, paths, tokens, and raw credential JSON.
+type AccountOption struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Email    string `json:"email"`
+	Disabled bool   `json:"disabled"`
+}
 type FamilyControl struct {
 	Owner   string   `json:"owner"`
 	Base    []string `json:"base_excluded_models"`
