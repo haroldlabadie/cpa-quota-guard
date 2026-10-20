@@ -2,8 +2,8 @@ package guard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -32,10 +32,10 @@ func (e *Engine) View() (State, int64, string, bool) {
 	defer e.mu.RUnlock()
 	return cloneState(e.state), e.LastTick, e.LastError, e.Running
 }
-func cloneState(s State) State { // JSON roundtrip deliberately bounds snapshot ownership and avoids shared maps.
-	b, _ := jsonMarshal(s)
+func cloneState(s State) State {
+	b, _ := json.Marshal(s)
 	var out State
-	_ = jsonUnmarshal(b, &out)
+	_ = json.Unmarshal(b, &out)
 	return out
 }
 func (e *Engine) SetSettings(s Settings) {
@@ -88,18 +88,25 @@ func (e *Engine) Run(ctx context.Context, check, probe time.Duration) {
 		}
 	}
 }
+
+// Tick uses one working copy. Reconcile and rule mutations update that copy;
+// only a successful final persistence publishes it to the engine. Observe mode
+// runs the same pure planning decisions but never persists or publishes state.
 func (e *Engine) Tick(ctx context.Context, now int64, fresh bool) error {
 	tickStarted := time.Now()
 	e.mu.RLock()
 	settings := e.settings
-	previous := cloneState(e.state)
+	working := cloneState(e.state)
 	e.mu.RUnlock()
+	e.mutationMu.RLock()
+	defer e.mutationMu.RUnlock()
 	ctx = context.WithValue(ctx, settingsContextKey{}, Digest(settings))
 	entries, err := e.backend.List(ctx)
 	if err != nil {
 		return errors.New("credential inventory unavailable")
 	}
 	var tickErr error
+	seen := map[string]bool{}
 	for _, entry := range entries {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -115,28 +122,79 @@ func (e *Engine) Tick(ctx context.Context, now int64, fresh bool) error {
 		if rule == nil {
 			continue
 		}
+		seen[entry.Name] = true
 		a, err := e.backend.Read(ctx, entry)
 		if err != nil {
+			obs := Observation{Name: entry.Name, Provider: entry.Provider, AuthIndex: entry.AuthIndex, Email: entry.Email, Reasons: []string{"credential metadata unavailable"}, Blocked: true, Action: "read-degraded; no credential change", UpdatedMS: now}
+			if old, ok := previousObservations(e)[entry.Name]; ok && old.Identity != "" {
+				obs.Identity = old.Identity
+				obs.Sample = old.Sample
+			}
+			working.Observations[entry.Name] = obs
 			tickErr = errors.New("credential metadata unavailable")
 			continue
 		}
-		// Bind email and runtime state on every read, not only the inventory snapshot.
 		if !strings.EqualFold(a.Entry.Email, rule.Email) || a.Entry.Provider != rule.Provider {
 			continue
 		}
-		obs := Observation{Name: entry.Name, Provider: entry.Provider, AuthIndex: entry.AuthIndex, Identity: a.Snapshot.Identity, Reasons: []string{}, UpdatedMS: now}
-		oldObs := previous.Observations[entry.Name]
+		obs := Observation{Name: entry.Name, Provider: entry.Provider, AuthIndex: entry.AuthIndex, Email: a.Entry.Email, Identity: a.Snapshot.Identity, Reasons: []string{}, UpdatedMS: now}
+		if conflict := working.Conflicts[entry.Name]; conflict != nil {
+			obs.Manual = true
+			obs.Action = "conflict; explicit offline resolution required"
+			obs.OrphanReason = conflict.Reason
+			if conflict.Identity == a.Snapshot.Identity && conflict.ObservedHash == a.Snapshot.ProtectedHash {
+				obs.TransactionID = conflict.ID
+			}
+			obs.Blocked = true
+			working.Observations[entry.Name] = obs
+			continue
+		}
+		if tx := working.Transactions[entry.Name]; tx != nil && tx.Phase == "conflict" {
+			obs.Manual = true
+			obs.Action = "conflict; explicit offline resolution required"
+			obs.TransactionID, obs.TransactionPhase = tx.ID, tx.Phase
+			obs.OrphanReason = tx.Reason
+			obs.Blocked = true
+			working.Observations[entry.Name] = obs
+			continue
+		}
+		if tx := working.Transactions[entry.Name]; tx != nil {
+			own := working.Ownership[entry.Name]
+			if own == nil {
+				own = &Ownership{}
+			}
+			resolved, recErr := e.reconcile(ctx, tx, own, a, &working, now)
+			if recErr != nil {
+				obs.Error = recErr.Error()
+				obs.TransactionID = tx.ID
+				obs.TransactionPhase = tx.Phase
+				obs.Action = "transaction-pending"
+				obs.Manual = tx.Phase == "conflict" || tx.Phase == "manual"
+				tickErr = recErr
+				working.Observations[entry.Name] = obs
+				// A persistence failure inside reconcile is fatal. Reconcile
+				// already persisted the new phase on the working state; do not
+				// swallow it and continue with later accounts.
+				if strings.Contains(recErr.Error(), "state persistence") {
+					return recErr
+				}
+				continue
+			}
+			if resolved != nil {
+				a = *resolved
+				obs.Identity = a.Snapshot.Identity
+			}
+		}
+		oldObs := working.Observations[entry.Name]
 		recent := oldObs.Identity == a.Snapshot.Identity && oldObs.Sample != nil && now-oldObs.Sample.ObservedMS <= 90000 && oldObs.Sample.ObservedMS <= now+1000
 		retained := false
 		if !fresh && recent {
 			retained = true
 			obs.Sample = oldObs.Sample
 		} else {
-			s, err := e.backend.Probe(ctx, a)
-			if err != nil {
+			s, probeErr := e.backend.Probe(ctx, a)
+			if probeErr != nil {
 				if recent {
-					// A transient management API failure must not discard an identity-bound
-					// sample that is still within the same freshness bound used for decisions.
 					obs.Sample = oldObs.Sample
 					obs.Error = "quota probe unavailable; retained recent sample"
 					retained = true
@@ -147,8 +205,6 @@ func (e *Engine) Tick(ctx context.Context, now int64, fresh bool) error {
 				obs.Sample = &s
 			}
 		}
-		// CPAMP panel snapshots are a best-effort display adapter. They never supply
-		// the evidence used by protection and are disabled in observe mode.
 		if e.apply && fresh && obs.Sample != nil && !retained {
 			if publisher, ok := e.backend.(interface {
 				Publish(context.Context, Account, Sample) error
@@ -158,7 +214,7 @@ func (e *Engine) Tick(ctx context.Context, now int64, fresh bool) error {
 				}
 			}
 		}
-		own := previous.Ownership[entry.Name]
+		own := working.Ownership[entry.Name]
 		if own == nil {
 			own = &Ownership{}
 		}
@@ -166,7 +222,7 @@ func (e *Engine) Tick(ctx context.Context, now int64, fresh bool) error {
 		if entry.Provider == "codex" {
 			obs.Reasons = Reasons(obs.Sample, entry.Provider, "all", *rule, decisionNow)
 			obs.Blocked = len(obs.Reasons) > 0
-			err = e.applyCodex(ctx, a, own, &obs)
+			err = e.applyCodex(ctx, a, own, &obs, &working, now)
 		} else {
 			obs.FamilyReasons = map[string][]string{}
 			for _, scope := range []string{"gemini", "third_party"} {
@@ -175,102 +231,73 @@ func (e *Engine) Tick(ctx context.Context, now int64, fresh bool) error {
 				obs.Reasons = append(obs.Reasons, r...)
 			}
 			obs.Blocked = len(obs.Reasons) > 0
-			err = e.applyFamily(ctx, a, own, &obs)
+			err = e.applyFamily(ctx, a, own, &obs, &working, now)
 		}
 		if err != nil {
 			obs.Error = err.Error()
 			tickErr = err
-		}
-		previous.Ownership[entry.Name] = own
-		previous.Observations[entry.Name] = obs
-		// A failed fsync after a credential write stops the worker: losing ownership
-		// must not permit further changes in this process.
-		if e.apply {
-			if err = AtomicJSON(e.statePath, previous); err != nil {
-				return errors.New("state persistence failed; automation stopped")
+			if strings.Contains(err.Error(), "state persistence") {
+				return err
 			}
 		}
+		working.Ownership[entry.Name] = own
+		working.Observations[entry.Name] = obs
+	}
+	// Keep a visible degraded state for whitelisted entries that disappeared or
+	// became unreadable during this tick; a successful save must not erase it.
+	// Reconcile previously observed whitelist entries that the inventory did not
+	// return. Do not invent a credential name from an email; retain the last known
+	// name and mark the evidence degraded.
+	for name, obs := range previousObservations(e) {
+		if seen[name] {
+			continue
+		}
+		for _, r := range settings.Rules {
+			if r.Enabled && strings.EqualFold(obs.Provider, r.Provider) && strings.EqualFold(obs.Email, r.Email) {
+				obs.Reasons = []string{"credential unavailable or no longer listed"}
+				obs.Blocked = true
+				obs.Action = "inventory-degraded; no credential change"
+				obs.UpdatedMS = now
+				working.Observations[name] = obs
+				break
+			}
+		}
+	}
+	if e.apply {
+		if err := e.persist(working); err != nil {
+			return err
+		}
+	} else {
 		e.mu.Lock()
-		e.state = cloneState(previous)
+		e.state = cloneState(working)
 		e.mu.Unlock()
 	}
 	return tickErr
 }
-func (e *Engine) mutate(ctx context.Context, a Account, fields map[string]any, own *Snapshot) (*Account, error) {
-	e.mutationMu.RLock()
-	defer e.mutationMu.RUnlock()
+
+func previousObservations(e *Engine) map[string]Observation {
 	e.mu.RLock()
-	revision := Digest(e.settings)
-	e.mu.RUnlock()
-	if expected, _ := ctx.Value(settingsContextKey{}).(string); expected != "" && expected != revision {
-		return nil, errors.New("settings changed before patch")
+	defer e.mu.RUnlock()
+	out := make(map[string]Observation, len(e.state.Observations))
+	for k, v := range e.state.Observations {
+		out[k] = v
 	}
-	current, err := e.backend.Read(ctx, a.Entry)
-	if err != nil {
-		return nil, errors.New("prewrite read failed")
-	}
-	if !Proven(&a.Snapshot, current.Snapshot) {
-		return nil, errors.New("credential changed before patch")
-	}
-	if own != nil && !Proven(own, current.Snapshot) {
-		return nil, errors.New("ownership changed before patch")
-	}
-	if !e.apply {
-		return &current, nil
-	}
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if err = e.backend.Patch(ctx, current, fields); err != nil {
-		return nil, errors.New("credential patch failed")
-	}
-	after, err := e.backend.Read(ctx, current.Entry)
-	if err != nil {
-		return nil, errors.New("credential readback failed")
-	}
-	if after.Snapshot.Identity != a.Snapshot.Identity {
-		return nil, errors.New("credential identity changed on readback")
-	}
-	p := after.Snapshot.Protected
-	for k, v := range fields {
-		match := false
-		switch k {
-		case "disabled":
-			match = p.Disabled == v
-		case "quota_guard_owner":
-			match = (v == nil && p.Owner == nil) || (p.Owner != nil && *p.Owner == v)
-		case "quota_guard_reason":
-			match = (v == nil && p.Reason == nil) || (p.Reason != nil && *p.Reason == v)
-		case "excluded_models":
-			match = reflect.DeepEqual(p.Excluded, v)
-		case "quota_guard_family_control":
-			if v == nil {
-				match = p.Family == nil
-			} else {
-				match = reflect.DeepEqual(p.Family, v)
-			}
-		}
-		if !match {
-			return nil, fmt.Errorf("credential readback mismatch: %s", k)
-		}
-	}
-	if after.Entry.Disabled != after.Snapshot.Protected.Disabled {
-		return nil, errors.New("credential runtime readback mismatch")
-	}
-	return &after, nil
+	return out
 }
 
-type settingsContextKey struct{}
-
-func (e *Engine) applyCodex(ctx context.Context, a Account, own *Ownership, obs *Observation) error {
+func (e *Engine) applyCodex(ctx context.Context, a Account, own *Ownership, obs *Observation, s *State, now int64) error {
 	p := a.Snapshot.Protected
-	if p.Disabled && (!HasOwner(p.Owner, Owner) || !Proven(own.Disable, a.Snapshot)) {
+	owned := p.Disabled && HasOwner(p.Owner, Owner) && Proven(own.Disable, a.Snapshot)
+	if p.Disabled && !owned {
 		obs.Manual = true
+		if HasOwner(p.Owner, Owner) {
+			obs.OrphanReason = "owner marker without matching prior proof"
+		}
 		obs.Action = "manual-disabled; retained"
 		own.Disable = nil
 		return nil
 	}
-	if p.Disabled {
+	if owned {
 		copy := a.Snapshot
 		own.Disable = &copy
 	}
@@ -279,8 +306,17 @@ func (e *Engine) applyCodex(ctx context.Context, a Account, own *Ownership, obs 
 		if !e.apply {
 			return nil
 		}
-		after, err := e.mutate(ctx, a, map[string]any{"disabled": true, "quota_guard_owner": Owner, "quota_guard_reason": strings.Join(obs.Reasons, "; ")}, nil)
+		target := p
+		target.Disabled = true
+		target.Owner = strPtr(Owner)
+		target.Reason = strPtr(strings.Join(obs.Reasons, "; "))
+		tx, err := e.startTransaction(a.Entry.Name, "disable", a.Snapshot, *own, target, s, now)
 		if err != nil {
+			return err
+		}
+		after, err := e.mutate(ctx, a, mutationFields(map[string]any{"disabled": true, "quota_guard_owner": Owner, "quota_guard_reason": *target.Reason}, tx.ID), nil, s, tx, now)
+		if err != nil {
+			obs.TransactionID, obs.TransactionPhase = tx.ID, tx.Phase
 			return err
 		}
 		own.Disable = &after.Snapshot
@@ -290,8 +326,17 @@ func (e *Engine) applyCodex(ctx context.Context, a Account, own *Ownership, obs 
 		if !e.apply {
 			return nil
 		}
-		_, err := e.mutate(ctx, a, map[string]any{"disabled": false, "quota_guard_owner": nil, "quota_guard_reason": nil}, own.Disable)
+		target := p
+		target.Disabled = false
+		target.Owner = nil
+		target.Reason = nil
+		tx, err := e.startTransaction(a.Entry.Name, "restore", a.Snapshot, *own, target, s, now)
 		if err != nil {
+			return err
+		}
+		_, err = e.mutate(ctx, a, mutationFields(map[string]any{"disabled": false, "quota_guard_owner": nil, "quota_guard_reason": nil}, tx.ID), own.Disable, s, tx, now)
+		if err != nil {
+			obs.TransactionID, obs.TransactionPhase = tx.ID, tx.Phase
 			return err
 		}
 		own.Disable = nil
@@ -299,11 +344,15 @@ func (e *Engine) applyCodex(ctx context.Context, a Account, own *Ownership, obs 
 	}
 	return nil
 }
-func (e *Engine) applyFamily(ctx context.Context, a Account, own *Ownership, obs *Observation) error {
+
+func (e *Engine) applyFamily(ctx context.Context, a Account, own *Ownership, obs *Observation, s *State, now int64) error {
 	p := a.Snapshot.Protected
 	wholeOwned := p.Disabled && HasOwner(p.Owner, Owner) && Proven(own.Disable, a.Snapshot)
 	if p.Disabled && !wholeOwned {
 		obs.Manual = true
+		if HasOwner(p.Owner, Owner) {
+			obs.OrphanReason = "whole disable owner without matching prior proof"
+		}
 		obs.Action = "manual-disabled; retained"
 		own.Disable = nil
 		return nil
@@ -316,6 +365,7 @@ func (e *Engine) applyFamily(ctx context.Context, a Account, own *Ownership, obs
 		own.Family = &copy
 	} else if p.Family != nil {
 		obs.Manual = true
+		obs.OrphanReason = "family control without matching prior proof"
 		own.Family = nil
 	}
 	blocked := []string{}
@@ -332,24 +382,24 @@ func (e *Engine) applyFamily(ctx context.Context, a Account, own *Ownership, obs
 	if len(blocked) > 0 {
 		control = &FamilyControl{Owner: FamilyOwner, Base: Normalize(base), Blocked: blocked}
 	}
-	// An unproven old control becomes manual baseline. No safe quota result may
-	// remove those exclusions; newly unsafe families may only add exclusions.
 	if !familyProven && p.Family != nil && len(blocked) == 0 && !wholeOwned {
 		obs.Action = "manual-exclusions; retained"
 		return nil
 	}
-	if reflect.DeepEqual(p.Excluded, target) && reflect.DeepEqual(p.Family, control) && !wholeOwned {
+	targetP := p
+	targetP.Excluded = target
+	targetP.Family = control
+	if wholeOwned {
+		targetP.Disabled = false
+		targetP.Owner = nil
+		targetP.Reason = nil
+	}
+	if reflect.DeepEqual(p.Excluded, targetP.Excluded) && reflect.DeepEqual(p.Family, targetP.Family) && !wholeOwned {
 		return nil
 	}
 	obs.Action = "would-update-families"
 	if !e.apply {
 		return nil
-	}
-	fields := map[string]any{"excluded_models": target, "quota_guard_family_control": control}
-	if wholeOwned {
-		fields["disabled"] = false
-		fields["quota_guard_owner"] = nil
-		fields["quota_guard_reason"] = nil
 	}
 	var proof *Snapshot
 	if familyProven {
@@ -358,11 +408,24 @@ func (e *Engine) applyFamily(ctx context.Context, a Account, own *Ownership, obs
 	if wholeOwned {
 		proof = own.Disable
 	}
-	after, err := e.mutate(ctx, a, fields, proof)
+	tx, err := e.startTransaction(a.Entry.Name, "family", a.Snapshot, *own, targetP, s, now)
 	if err != nil {
 		return err
 	}
-	own.Disable = nil
+	fields := map[string]any{"excluded_models": target, "quota_guard_family_control": control}
+	if wholeOwned {
+		fields["disabled"] = false
+		fields["quota_guard_owner"] = nil
+		fields["quota_guard_reason"] = nil
+	}
+	after, err := e.mutate(ctx, a, mutationFields(fields, tx.ID), proof, s, tx, now)
+	if err != nil {
+		obs.TransactionID, obs.TransactionPhase = tx.ID, tx.Phase
+		return err
+	}
+	if wholeOwned {
+		own.Disable = nil
+	}
 	if control != nil {
 		own.Family = &after.Snapshot
 	} else {

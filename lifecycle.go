@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const pluginVersion = "0.1.1"
+const pluginVersion = "0.2.0"
 const pluginID = "cpa-quota-guard"
 
 type bootstrap struct {
@@ -102,6 +102,10 @@ func configure(raw []byte) error {
 	if err != nil || len(keyBytes) > 65536 || len(strings.TrimSpace(string(keyBytes))) == 0 {
 		return errors.New("secret_file unavailable")
 	}
+	sig, err := os.Stat(cfg.SecretFile)
+	if err != nil || sig.Size() != fi.Size() || sig.ModTime() != fi.ModTime() {
+		return errors.New("secret_file changed during read")
+	}
 	if err = os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return errors.New("data directory unavailable")
 	}
@@ -138,10 +142,19 @@ func configure(raw []byte) error {
 			return errors.New("apply mode requires an explicitly initialized or migrated state.json")
 		}
 	}
-	state, err := guard.LoadState(statePath)
+	state, upgrade, err := guard.LoadStateUpgrade(statePath)
 	if err != nil {
 		unlockFile(lock)
 		return errors.New("state invalid; automation stopped")
+	}
+	if upgrade && cfg.Mode == "apply" {
+		// Loading schema 1 already validates and upgrades the in-memory model.
+		// Observe stays read-only; apply owns worker.lock and can atomically
+		// persist the explicit schema upgrade before starting the worker.
+		if err = guard.AtomicJSON(statePath, state); err != nil {
+			unlockFile(lock)
+			return errors.New("state upgrade persistence failed; automation stopped")
+		}
 	}
 	engine := guard.NewEngine(newBackend(hostCall, cfg.CPAMPURL, strings.TrimSpace(string(keyBytes))), state, settings, filepath.Join(cfg.DataDir, "state.json"), cfg.Mode == "apply")
 	keyBytes = nil

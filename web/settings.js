@@ -17,7 +17,7 @@
   }
   function observations(rows) {
     el("observations").replaceChildren();
-    Object.values(rows).forEach(item => { const row = document.createElement("tr"); cell(row, item.name + " · " + item.provider); cell(row, item.manual ? "人工限制，保留" : item.blocked ? "额度保护" : "额度正常"); const windows = item.sample ? item.sample.windows : []; cell(row, windows.map(w => `${w.scope} ${w.kind === "five_hour" ? "五小时" : "每周"} ${w.remaining.toFixed(1)}%`).join("；") || "暂无可信采样"); cell(row, [item.error, ...(item.reasons || []), item.action, item.snapshot_error].filter(Boolean).join("；")); el("observations").append(row); });
+    Object.values(rows).forEach(item => { const row = document.createElement("tr"); cell(row, item.name + " · " + item.provider); cell(row, item.orphan_reason ? "所有权孤儿，待人工决定" : item.action === "transaction-pending" ? "事务待核对" : item.manual ? "人工限制，保留" : item.blocked ? "额度保护" : "额度正常"); const windows = item.sample ? item.sample.windows : []; cell(row, windows.map(w => `${w.scope} ${w.kind === "five_hour" ? "五小时" : "每周"} ${w.remaining.toFixed(1)}%`).join("；") || "暂无可信采样"); cell(row, [item.error, ...(item.reasons || []), item.action, item.transaction_id ? "事务 " + item.transaction_id + " " + (item.transaction_phase || "") : "", item.orphan_reason, item.snapshot_error].filter(Boolean).join("；")); el("observations").append(row); });
   }
   async function request(path, options = {}) {
     const response = await fetch(base + path, {...options, credentials: "same-origin", headers: {"Authorization": "Bearer " + key, "Content-Type": "application/json", ...(options.headers || {})}});

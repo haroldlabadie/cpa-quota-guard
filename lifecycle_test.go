@@ -179,3 +179,45 @@ func TestApplyRequiresExplicitState(t *testing.T) {
 		t.Fatal("explicit fresh state rejected", err)
 	}
 }
+
+func TestSchemaOneObserveLoadsInMemoryAndApplyPersists(t *testing.T) {
+	i := setupInstance(t)
+	legacy := `{"schema":1,"plugin":"cpa-quota-guard","legacy":{"version":2,"accounts":{}},"ownership_proofs":{},"observations":{}}`
+	statePath := filepath.Join(i.cfg.DataDir, "state.json")
+	if err := os.WriteFile(statePath, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "enabled: false\nmode: observe\ndata_dir: " + i.cfg.DataDir + "\nsecret_file: " + i.cfg.SecretFile + "\ncpamp_url: http://127.0.0.1:18317\n"
+	raw, _ := json.Marshal(map[string]any{"schema_version": 6, "config_yaml": []byte(yaml)})
+	if err := configure(raw); err != nil {
+		t.Fatalf("observe rejected valid schema one: %v", err)
+	}
+	if b, _ := os.ReadFile(statePath); !strings.Contains(string(b), `"schema":1`) {
+		t.Fatal("observe persisted schema upgrade")
+	}
+	state, _, _, _ := i.engine.View()
+	if state.Schema != 2 || state.Transactions == nil || state.Conflicts == nil {
+		t.Fatal("observe did not upgrade in-memory state")
+	}
+	yaml = "enabled: false\nmode: apply\ndata_dir: " + i.cfg.DataDir + "\nsecret_file: " + i.cfg.SecretFile + "\ncpamp_url: http://127.0.0.1:18317\n"
+	raw, _ = json.Marshal(map[string]any{"schema_version": 6, "config_yaml": []byte(yaml)})
+	if err := configure(raw); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(statePath)
+	if !strings.Contains(string(b), `"schema": 2`) {
+		t.Fatal("apply did not persist schema upgrade")
+	}
+	stopCurrent()
+	if err := configure(raw); err != nil {
+		t.Fatal("upgraded state rejected on reopen")
+	}
+}
+
+func TestStateSchemaTwoRejectsFuture(t *testing.T) {
+	for _, raw := range []string{`{"schema":3,"plugin":"cpa-quota-guard","legacy":{"version":2,"accounts":{}},"ownership_proofs":{},"observations":{}}`, `{"schema":2,"plugin":"cpa-quota-guard","legacy":{"version":2,"accounts":{}},"ownership_proofs":{},"observations":{},"transactions":{},"conflicts":{},"journal":[],"unknown":true}`} {
+		if _, err := guard.ParseState([]byte(raw)); err == nil {
+			t.Fatal("invalid state accepted")
+		}
+	}
+}

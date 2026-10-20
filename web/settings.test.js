@@ -16,8 +16,8 @@ function app() {
     if (options.method === "PUT") return {ok: !failure, status: failure ? 412 : 200, json: async () => failure ? {error: "conflict"} : {}};
     let body = {};
     if (url.endsWith("/settings")) body = {settings: {schema: 1, rules: [{email: "test@example.invalid", provider: "codex", enabled: true, reserve_five_hour: 8, reserve_weekly: 3}]}, revision: "r1"};
-    if (url.endsWith("/status")) body = {version: "0.1.0", mode: "observe", running: true};
-    if (url.endsWith("/observations")) body = {observations: {a: {name: "<img onerror=alert(1)>", provider: "codex", blocked: true, reasons: ["<script>bad</script>"]}}};
+    if (url.endsWith("/status")) body = {version: "0.2.0", mode: "observe", running: true};
+    if (url.endsWith("/observations")) body = {observations: {a: {name: "<img onerror=alert(1)>", provider: "codex", blocked: true, reasons: ["<script>bad</script>"], transaction_id: "tx-1", transaction_phase: "conflict", orphan_reason: "owner marker without matching prior proof"}}};
     return {ok: true, headers: {get: () => '"r1"'}, json: async () => body};
   }, Date, JSON, Number, Object, console});
   return {get, requests, fail: () => { failure = true; }};
@@ -36,4 +36,11 @@ test("conflict preserves the edited rule and does not reload it", async () => {
 });
 test("untrusted credential names and reasons render as text", async () => {
   const a = app(); await a.get("connect").onclick(); const row = a.get("observations").children[0]; assert.match(row.children[0].textContent, /^<img/); assert.match(row.children[3].textContent, /<script>/);
+});
+
+test("transaction, orphan and conflict status are distinguishable", async () => {
+  const a = app(); await a.get("connect").onclick(); const row = a.get("observations").children[0];
+  assert.equal(row.children[1].textContent, "所有权孤儿，待人工决定");
+  assert.match(row.children[3].textContent, /事务 tx-1 conflict/);
+  assert.match(row.children[3].textContent, /owner marker/);
 });

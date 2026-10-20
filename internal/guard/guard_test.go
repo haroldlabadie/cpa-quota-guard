@@ -364,10 +364,36 @@ func TestStateCorruptionAndPermissions(t *testing.T) {
 		t.Fatal("corrupt state accepted")
 	}
 }
+func TestStateCorruptionRejectsNonObjectLegacyEvidence(t *testing.T) {
+	s := NewState()
+	bad, _ := json.Marshal(s)
+	var obj map[string]any
+	_ = json.Unmarshal(bad, &obj)
+	obj["legacy"] = map[string]any{"version": 2, "accounts": map[string]any{"a.json": []any{1}}}
+	bad, _ = json.Marshal(obj)
+	if _, err := ParseState(bad); err == nil {
+		t.Fatal("non-object legacy evidence accepted")
+	}
+}
+func TestStateDigestCoversFullProvenance(t *testing.T) {
+	s := NewState()
+	s.Legacy.Accounts["unknown"] = json.RawMessage(`{"custom":"first"}`)
+	first := StateDigest(s)
+	s.Legacy.Accounts["unknown"] = json.RawMessage(`{"custom":"second"}`)
+	if StateDigest(s) == first {
+		t.Fatal("state digest ignored legacy source evidence")
+	}
+	s.Migration = json.RawMessage(`{"id":"migration-one"}`)
+	second := StateDigest(s)
+	s.Migration = json.RawMessage(`{"id":"migration-two"}`)
+	if StateDigest(s) == second {
+		t.Fatal("state digest ignored migration provenance")
+	}
+}
 func TestQuotaParsers(t *testing.T) {
 	good := `{"rate_limit":{"primary_window":{"limit_window_seconds":18000,"used_percent":92,"reset_at":1900001000},"secondary_window":{"limit_window_seconds":604800,"used_percent":2,"reset_at":1900100000}},"additional_rate_limits":[{"limit_name":"extra","rate_limit":{"primary_window":{"limit_window_seconds":18000,"used_percent":99,"reset_at":1900001000}}}]}`
 	windows, err := ParseCodex(decode(t, good))
-	if err != nil || len(windows) != 3 || windows[2].Scope != "extra" {
+	if err != nil || len(windows) != 3 || windows[2].Scope != "additional:extra" {
 		t.Fatal(windows, err)
 	}
 	for _, bad := range []string{strings.Replace(good, `"used_percent":92`, `"used_percent":true`, 1), strings.Replace(good, `"used_percent":92`, `"used_percent":-1`, 1), strings.Replace(good, `"used_percent":92`, `"used_percent":"NaN"`, 1), `{"rate_limit":{}}`} {

@@ -29,25 +29,69 @@ func Number(v any) (float64, error) {
 	}
 	return f, nil
 }
+
+func codexWindow(role string, raw any) (Window, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return Window{}, errors.New("invalid Codex window")
+	}
+	dur, e1 := Number(m["limit_window_seconds"])
+	used, e2 := Number(m["used_percent"])
+	reset, e3 := Number(m["reset_at"])
+	if e1 != nil || e2 != nil || e3 != nil || used < 0 || used > 100 || dur <= 0 || reset <= 0 || dur > 1e10 || reset > 1e13 {
+		return Window{}, errors.New("invalid Codex quota")
+	}
+	duration := int64(dur) * 1000
+	kind, id := "other", role
+	switch duration {
+	case FiveHourMS:
+		kind, id = "five_hour", "five-hour"
+	case WeekMS:
+		kind, id = "weekly", "weekly"
+	case 2592000000:
+		id = "monthly"
+	}
+	return Window{id, kind, "all", 100 - used, int64(reset) * 1000, duration}, nil
+}
+
+// ParseCodex treats the scope=all main pool as mandatory. Additional pools are
+// best-effort display evidence: a malformed additional pool is omitted instead
+// of making a healthy main pool unknown. Input validation of a malformed main
+// pool still fails closed.
 func ParseCodex(body map[string]any) ([]Window, error) {
 	main, ok := body["rate_limit"].(map[string]any)
 	if !ok {
 		return nil, errors.New("missing Codex rate_limit")
 	}
-	type group struct {
-		label, scope string
-		limit        map[string]any
+	out := []Window{}
+	for _, role := range []string{"primary_window", "secondary_window"} {
+		raw := main[role]
+		if raw == nil {
+			continue
+		}
+		w, err := codexWindow(role, raw)
+		if err != nil {
+			return nil, err
+		}
+		if w.Kind != "five_hour" && w.Kind != "weekly" && w.Kind != "other" {
+			return nil, errors.New("invalid Codex main window")
+		}
+		out = append(out, w)
 	}
-	groups := []group{{"codex", "all", main}}
-	if additional, exists := body["additional_rate_limits"]; exists && additional != nil {
+	if len(out) == 0 {
+		return nil, errors.New("empty Codex main windows")
+	}
+	additional, exists := body["additional_rate_limits"]
+	if exists && additional != nil {
 		items, ok := additional.([]any)
 		if !ok {
-			return nil, errors.New("invalid additional rate limits")
+			// A malformed display-only pool cannot erase the valid main pool.
+			return out, nil
 		}
 		for _, r := range items {
 			m, ok := r.(map[string]any)
 			if !ok {
-				return nil, errors.New("invalid additional rate limit")
+				continue
 			}
 			label, _ := m["limit_name"].(string)
 			if label == "" {
@@ -60,44 +104,28 @@ func ParseCodex(body map[string]any) ([]Window, error) {
 			if !ok {
 				l = m
 			}
-			groups = append(groups, group{label, label, l})
+			pool := []Window{}
+			valid := true
+			for _, role := range []string{"primary_window", "secondary_window"} {
+				raw := l[role]
+				if raw == nil {
+					continue
+				}
+				w, err := codexWindow(role, raw)
+				if err != nil {
+					valid = false
+					break
+				}
+				// Additional pools are display-only and never share the reserved
+				// scope=all namespace, even if their label says "all".
+				w.Scope = "additional:" + label
+				w.ID = "additional:" + label + ":" + w.ID
+				pool = append(pool, w)
+			}
+			if valid {
+				out = append(out, pool...)
+			}
 		}
-	}
-	out := []Window{}
-	for _, g := range groups {
-		for _, role := range []string{"primary_window", "secondary_window"} {
-			raw := g.limit[role]
-			if raw == nil {
-				continue
-			}
-			m, ok := raw.(map[string]any)
-			if !ok {
-				return nil, errors.New("invalid Codex window")
-			}
-			dur, e1 := Number(m["limit_window_seconds"])
-			used, e2 := Number(m["used_percent"])
-			reset, e3 := Number(m["reset_at"])
-			if e1 != nil || e2 != nil || e3 != nil || used < 0 || used > 100 || dur <= 0 || reset <= 0 || dur > 1e10 || reset > 1e13 {
-				return nil, errors.New("invalid Codex quota")
-			}
-			duration := int64(dur) * 1000
-			kind, id := "other", role
-			switch duration {
-			case FiveHourMS:
-				kind, id = "five_hour", "five-hour"
-			case WeekMS:
-				kind, id = "weekly", "weekly"
-			case 2592000000:
-				id = "monthly"
-			}
-			if g.label != "codex" {
-				id = g.label + ":" + id
-			}
-			out = append(out, Window{id, kind, g.scope, 100 - used, int64(reset) * 1000, duration})
-		}
-	}
-	if len(out) == 0 {
-		return nil, errors.New("empty Codex windows")
 	}
 	return out, nil
 }
@@ -222,11 +250,19 @@ func Reasons(sample *Sample, provider, scope string, rule Rule, now int64) []str
 	kinds := map[string]bool{}
 	windows := []Window{}
 	for _, w := range sample.Windows {
-		if (provider == "codex" || w.Scope == scope) && (w.Kind == "five_hour" || w.Kind == "weekly") {
-			windows = append(windows, w)
-			if provider != "codex" || w.Scope == "all" {
-				kinds[w.Kind] = true
+		// Codex protection depends only on scope=all. Additional pools may be
+		// displayed, but cannot block the whole credential.
+		if provider == "codex" {
+			if w.Scope != "all" || (w.Kind != "five_hour" && w.Kind != "weekly") {
+				continue
 			}
+			windows = append(windows, w)
+			kinds[w.Kind] = true
+			continue
+		}
+		if w.Scope == scope && (w.Kind == "five_hour" || w.Kind == "weekly") {
+			windows = append(windows, w)
+			kinds[w.Kind] = true
 		}
 	}
 	if !kinds["five_hour"] || !kinds["weekly"] {

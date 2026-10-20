@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -17,7 +18,7 @@ func Digest(v any) string {
 }
 
 var tokenFields = map[string]bool{"access_token": true, "refresh_token": true, "id_token": true, "last_refresh": true, "expired": true, "expiry": true, "expires_at": true, "expires_in": true, "token": true, "timestamp": true}
-var protectedFields = map[string]bool{"disabled": true, "quota_guard_owner": true, "quota_guard_reason": true, "quota_guard_family_control": true, "excluded_models": true, "excluded-models": true}
+var protectedFields = map[string]bool{"disabled": true, "quota_guard_owner": true, "quota_guard_reason": true, "quota_guard_family_control": true, "excluded_models": true, "excluded-models": true, "quota_guard_mutation_id": true}
 
 func Exclusions(v any) ([]string, error) {
 	out := []string{}
@@ -80,6 +81,12 @@ func MakeAccount(entry Entry, raw map[string]any, mtime int64) (Account, error) 
 	if p.Reason, err = optionalString(raw, "quota_guard_reason"); err != nil {
 		return a, err
 	}
+	if p.MutationID, err = optionalString(raw, "quota_guard_mutation_id"); err != nil {
+		return a, err
+	}
+	if p.MutationID != nil && (len(*p.MutationID) == 0 || len(*p.MutationID) > 128) {
+		return a, errors.New("invalid mutation id")
+	}
 	excluded := raw["excluded_models"]
 	if excluded == nil {
 		excluded = raw["excluded-models"]
@@ -133,9 +140,14 @@ func Normalize(rows []string) []string {
 }
 func HasOwner(s *string, want string) bool { return s != nil && *s == want }
 
+func ProtectedEqual(a, b Protected) bool {
+	return reflect.DeepEqual(a, b)
+}
+
 // Proven rejects protected/identity changes and same-content rewrites. Token-only
 // refresh and unrelated metadata edits retain ownership. CPA has no field CAS;
 // simultaneous manual writes during refresh remain an explicit host limitation.
+
 func Proven(old *Snapshot, current Snapshot) bool {
 	if old == nil || old.Identity != current.Identity || old.ProtectedHash != current.ProtectedHash || Digest(old.Protected) != old.ProtectedHash {
 		return false
