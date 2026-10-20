@@ -107,6 +107,9 @@ func TestPublicPageOnlyStaticShell(t *testing.T) {
 	if strings.Contains(string(r.Body), "innerHTML") {
 		t.Fatal("unsafe rendering")
 	}
+	if !strings.Contains(string(r.Body), "cpa_quota_guard_mgmt_key") || !strings.Contains(string(r.Body), "localStorage.setItem") {
+		t.Fatal("manual management key must persist in browser storage")
+	}
 }
 func TestCorruptStateStopsNewInstance(t *testing.T) {
 	i := setupInstance(t)

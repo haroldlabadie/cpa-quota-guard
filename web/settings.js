@@ -1,6 +1,7 @@
 (() => {
   "use strict";
   const base = "/v0/management/plugins/cpa-quota-guard";
+  const AUTH_KEY = "cpa_quota_guard_mgmt_key", CPAMC_AUTH_KEY = "cli-proxy-auth";
   let key = "", etag = "", draft = [];
   const el = id => document.getElementById(id);
   const show = (text, tone = "") => { const message = el("message"); message.textContent = text; message.className = "message" + (tone ? " " + tone : ""); };
@@ -36,7 +37,9 @@
   }
   async function request(path, options = {}) {
     const response = await fetch(base + path, {...options, credentials: "same-origin", headers: {"Authorization": "Bearer " + key, "Content-Type": "application/json", ...(options.headers || {})}});
-    const body = await response.json(); if (!response.ok) throw new Error(body.error || "管理请求失败 " + response.status); return {body, response};
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) { const error = new Error(body.error || "管理请求失败 " + response.status); error.status = response.status; throw error; }
+    return {body, response};
   }
   function setStatus(status) {
     el("version").textContent = "v" + status.version;
@@ -48,17 +51,90 @@
     el("modeLabel").textContent = status.mode === "apply" ? "Apply · 自动保护" : "Observe · 只读观测";
     el("lastError").textContent = status.last_error || "";
   }
+  function decodeStoredValue(raw) {
+    if (!raw || !raw.startsWith("enc::")) return raw;
+    const prefix = raw.startsWith("enc::v2::") ? "enc::v2::" : "enc::v1::";
+    try {
+      const encoded = atob(raw.slice(prefix.length));
+      const encrypted = Uint8Array.from(encoded, c => c.charCodeAt(0));
+      const salt = prefix === "enc::v2::" ? `cli-proxy-api-webui::secure-storage|v2|${window.location.host}` : `cli-proxy-api-webui::secure-storage|${window.location.host}|${navigator.userAgent}`;
+      const keyBytes = new TextEncoder().encode(salt);
+      return new TextDecoder().decode(encrypted.map((byte, index) => byte ^ keyBytes[index % keyBytes.length]));
+    } catch (_) { return raw; }
+  }
+  function readStoredValue(name) {
+    try { const raw = localStorage.getItem(name); if (raw === null) return null; const decoded = decodeStoredValue(raw); try { return JSON.parse(decoded); } catch (_) { return decoded; } } catch (_) { return null; }
+  }
+  function readCPAMCManagementKey() {
+    try {
+      if (localStorage.getItem("isLoggedIn") !== "true") return "";
+      const persisted = readStoredValue(CPAMC_AUTH_KEY);
+      const current = persisted && typeof persisted === "object" ? persisted.state?.managementKey : "";
+      if (typeof current === "string" && current.trim()) return current.trim();
+      const legacy = readStoredValue("managementKey");
+      return typeof legacy === "string" ? legacy.trim() : "";
+    } catch (_) { return ""; }
+  }
+  function readSavedManagementKey() {
+    try { const direct = localStorage.getItem(AUTH_KEY) || sessionStorage.getItem(AUTH_KEY); if (typeof direct === "string" && direct.trim()) return direct.trim(); } catch (_) {}
+    return readCPAMCManagementKey();
+  }
+  function clearSavedManagementKey() { try { localStorage.removeItem(AUTH_KEY); sessionStorage.removeItem(AUTH_KEY); } catch (_) {} }
+  function rememberManagementKey(value, remember) { try { if (remember) localStorage.setItem(AUTH_KEY, value); else sessionStorage.setItem(AUTH_KEY, value); } catch (_) {} }
+  function showAuth(kind, title, message) {
+    el("authGate").hidden = false; el("app").hidden = true;
+    el("authTitle").textContent = title; el("authMessage").textContent = message;
+    el("manualAuth").hidden = kind === "loading";
+    el("retrySession").hidden = kind !== "error";
+  }
+  function showManualAuth(title, message) {
+    key = ""; el("manualKey").value = "";
+    showAuth("manual", title, message);
+    el("manualKey").focus();
+  }
+  async function connectWithKey(candidate, remember) {
+    const value = String(candidate || "").trim(); if (!value) return;
+    key = value;
+    showAuth("loading", "正在接入管理会话", "正在验证管理令牌并读取额度保护设置…");
+    try {
+      await load();
+      if (remember) rememberManagementKey(value, true);
+      el("authGate").hidden = true; el("app").hidden = false; el("manualKey").value = "";
+    } catch (error) {
+      if (error.status === 401 || error.status === 403) clearSavedManagementKey();
+      showManualAuth(error.status === 401 ? "管理令牌已失效" : "无法连接管理会话", error.message || "请检查管理令牌后重试。");
+    }
+  }
+  async function connectFromSession() {
+    const saved = readSavedManagementKey();
+    if (!saved) { showManualAuth("接入管理会话", "未检测到 CPAMP 会话，请输入 CPA 管理令牌。"); return; }
+    key = saved;
+    showAuth("loading", "正在接入管理会话", "正在读取 CPAMP 当前会话，无需再次输入管理令牌。");
+    try {
+      await load();
+      el("authGate").hidden = true; el("app").hidden = false;
+    } catch (error) {
+      if (error.status === 401 || error.status === 403) clearSavedManagementKey();
+      showManualAuth("管理会话不可用", error.message || "请重新输入管理令牌。");
+    }
+  }
+  function logOut() {
+    clearSavedManagementKey(); key = ""; draft = []; etag = "";
+    el("rules").replaceChildren(); el("observations").replaceChildren(); el("app").hidden = true; el("authGate").hidden = false;
+    showAuth("manual", "接入管理会话", "已退出当前管理会话。请输入管理令牌，或重新登录 CPAMP。");
+    el("manualKey").focus();
+  }
   async function load() {
     show("正在读取运行状态…");
-    try { const [status, settings, data] = await Promise.all([request("/status"), request("/settings"), request("/observations")]); setStatus(status.body); draft = settings.body.settings.rules; rules(); observations(data.body.observations); etag = settings.response.headers.get("ETag") || '"' + settings.body.revision + '"'; el("session").hidden = true; show("已加载最新状态", "success"); }
-    catch (error) { show(error.message, "error"); el("session").hidden = false; }
+    const [status, settings, data] = await Promise.all([request("/status"), request("/settings"), request("/observations")]);
+    setStatus(status.body); draft = settings.body.settings.rules; rules(); observations(data.body.observations); etag = settings.response.headers.get("ETag") || '"' + settings.body.revision + '"'; show("已加载最新状态", "success");
   }
-  function readSession() {
-    try { let raw = localStorage.getItem("cli-proxy-auth"); if (!raw) return ""; if (raw.startsWith("enc::v1::")) { const bytes = Uint8Array.from(atob(raw.slice(9)), c => c.charCodeAt(0)); const salt = new TextEncoder().encode(`cli-proxy-api-webui::secure-storage|${window.location.host}|${navigator.userAgent}`); raw = new TextDecoder().decode(bytes.map((b, i) => b ^ salt[i % salt.length])); } const auth = JSON.parse(raw), state = auth.state || auth; return typeof state.managementKey === "string" ? state.managementKey : ""; } catch (_) { return ""; }
-  }
-  el("connect").onclick = () => { key = el("key").value.trim(); el("key").value = ""; return load(); };
-  el("refresh").onclick = load;
+  el("manualConnect").addEventListener("click", () => connectWithKey(el("manualKey").value, el("rememberKey").checked));
+  el("manualKey").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); connectWithKey(el("manualKey").value, el("rememberKey").checked); } });
+  el("retrySession").addEventListener("click", connectFromSession);
+  el("logout").addEventListener("click", logOut);
+  el("refresh").onclick = () => connectFromSession().catch(error => show(error.message, "error"));
   el("add").onclick = () => { draft.push({email: "", provider: "codex", enabled: true, reserve_five_hour: 8, reserve_weekly: 3}); rules(); };
   el("save").onclick = async () => { try { await request("/settings", {method: "PUT", headers: {"If-Match": etag}, body: JSON.stringify({schema: 1, rules: draft})}); await load(); show("已保存，下一次检查将使用新规则", "success"); } catch (error) { show(error.message, "error"); } };
-  key = readSession(); if (key) load();
+  connectFromSession();
 })();
