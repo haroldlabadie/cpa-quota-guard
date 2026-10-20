@@ -19,7 +19,7 @@
 
 ```sh
 install -d -m 0700 /CLIProxyAPI/plugins/cpa-quota-guard-data
-install -m 0644 cpa-quota-guard.so /CLIProxyAPI/plugins/cpa-quota-guard.so
+install -m 0644 cpa-quota-guard.so /CLIProxyAPI/plugins/cpa-quota-guard-v0.2.0.so
 install -m 0600 settings.example.json /CLIProxyAPI/plugins/cpa-quota-guard-data/settings.json
 ```
 
@@ -33,6 +33,7 @@ plugins:
   dir: /CLIProxyAPI/plugins
   configs:
     cpa-quota-guard:
+      version: 0.2.0
       enabled: true
       priority: 0
       mode: observe

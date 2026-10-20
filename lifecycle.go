@@ -19,6 +19,7 @@ const pluginVersion = "0.2.0"
 const pluginID = "cpa-quota-guard"
 
 type bootstrap struct {
+	Version      string `yaml:"version,omitempty"`
 	Priority     int    `yaml:"priority"`
 	Store        any    `yaml:"store,omitempty"`
 	Enabled      bool   `yaml:"enabled"`
