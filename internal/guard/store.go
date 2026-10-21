@@ -40,8 +40,21 @@ func ValidateSettings(s Settings) error {
 		if email == "" || !strings.Contains(email, "@") || email != r.Email || len(email) > 320 {
 			return errors.New("invalid normalized email")
 		}
-		if r.Provider != "codex" && r.Provider != "antigravity" {
+		if !SupportedProvider(r.Provider) {
 			return errors.New("invalid provider")
+		}
+		if len(r.Scopes) > 0 {
+			supported := map[string]bool{}
+			for _, scope := range SupportedScopes(r.Provider) {
+				supported[scope] = true
+			}
+			seenScopes := map[string]bool{}
+			for _, scope := range r.Scopes {
+				if !supported[scope] || seenScopes[scope] {
+					return errors.New("invalid or duplicate model scope")
+				}
+				seenScopes[scope] = true
+			}
 		}
 		if r.ReserveFiveHour < 0 || r.ReserveFiveHour >= 100 || r.ReserveWeekly < 0 || r.ReserveWeekly >= 100 {
 			return errors.New("reserve must be within [0,100)")

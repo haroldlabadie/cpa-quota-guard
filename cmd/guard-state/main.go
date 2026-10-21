@@ -72,7 +72,7 @@ func run() error {
 	if err = guard.StrictJSON(b, &req); err != nil {
 		return err
 	}
-	if req.Auth == nil || req.Name == "" || req.AuthIndex == "" || req.MtimeNS <= 0 || (req.Provider != "codex" && req.Provider != "antigravity") {
+	if req.Auth == nil || req.Name == "" || req.AuthIndex == "" || req.MtimeNS <= 0 || !guard.SupportedProvider(req.Provider) {
 		return errors.New("input")
 	}
 	a, err := guard.MakeAccount(guard.Entry{Name: req.Name, AuthIndex: req.AuthIndex, Provider: req.Provider, Email: req.Email}, req.Auth, req.MtimeNS)

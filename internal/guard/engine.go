@@ -219,13 +219,13 @@ func (e *Engine) Tick(ctx context.Context, now int64, fresh bool) error {
 			own = &Ownership{}
 		}
 		decisionNow := now + time.Since(tickStarted).Milliseconds()
-		if entry.Provider == "codex" {
+		if IsWholeCredential(entry.Provider) {
 			obs.Reasons = Reasons(obs.Sample, entry.Provider, "all", *rule, decisionNow)
 			obs.Blocked = len(obs.Reasons) > 0
 			err = e.applyCodex(ctx, a, own, &obs, &working, now)
 		} else {
 			obs.FamilyReasons = map[string][]string{}
-			for _, scope := range []string{"gemini", "third_party"} {
+			for _, scope := range EffectiveScopes(entry.Provider, rule.Scopes) {
 				r := Reasons(obs.Sample, entry.Provider, scope, *rule, decisionNow)
 				obs.FamilyReasons[scope] = r
 				obs.Reasons = append(obs.Reasons, r...)
@@ -370,10 +370,10 @@ func (e *Engine) applyFamily(ctx context.Context, a Account, own *Ownership, obs
 	}
 	blocked := []string{}
 	target := append([]string{}, base...)
-	for _, scope := range []string{"gemini", "third_party"} {
+	for _, scope := range sortedKeys(obs.FamilyReasons) {
 		if len(obs.FamilyReasons[scope]) > 0 {
 			blocked = append(blocked, scope)
-			target = append(target, Patterns[scope]...)
+			target = append(target, ScopePatterns(a.Entry.Provider, scope)...)
 		}
 	}
 	target = Normalize(target)
@@ -433,4 +433,13 @@ func (e *Engine) applyFamily(ctx context.Context, a Account, own *Ownership, obs
 	}
 	obs.Action = "families-updated"
 	return nil
+}
+
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

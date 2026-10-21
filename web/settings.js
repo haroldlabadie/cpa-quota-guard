@@ -5,36 +5,86 @@
   let key = "", etag = "", draft = [], accounts = [], openPicker = null;
   const el = id => document.getElementById(id);
   const show = (text, tone = "") => { const message = el("message"); message.textContent = text; message.className = "message" + (tone ? " " + tone : ""); };
-  const providerName = value => value === "codex" ? "Codex" : "Antigravity";
+  let PROVIDERS = [];
+  let SCOPES = {};
+  const FALLBACK_PROVIDERS = [
+    {key: "codex", label: "Codex", hint: "整份凭证额度", whole_credential: true, scopes: [{key: "all", label: "全部额度", hint: "整份凭证共用五小时与每周窗口"}]},
+    {key: "antigravity", label: "Antigravity", hint: "Gemini 与 Claude / GPT 分组额度", whole_credential: false, scopes: [{key: "gemini", label: "Gemini", hint: "Gemini 模型组"}, {key: "third_party", label: "Claude / GPT", hint: "Claude 与 GPT 模型组"}]}
+  ];
+  function setCatalog(rows) {
+    const valid = Array.isArray(rows) ? rows.filter(item => item && typeof item.key === "string" && item.key && Array.isArray(item.scopes) && item.scopes.length) : [];
+    const source = valid.length ? valid : FALLBACK_PROVIDERS;
+    PROVIDERS = source.map(item => ({value: item.key, label: item.label || item.key, hint: item.hint || "", whole: Boolean(item.whole_credential)}));
+    SCOPES = Object.fromEntries(source.map(item => [item.key, item.scopes.filter(scope => scope && typeof scope.key === "string" && scope.key).map(scope => ({value: scope.key, label: scope.label || scope.key, hint: scope.hint || ""}))]));
+  }
+  setCatalog(FALLBACK_PROVIDERS);
+  const providerName = value => (PROVIDERS.find(item => item.value === value) || PROVIDERS[0] || {label: value}).label;
+  const scopesFor = provider => SCOPES[provider] || [];
   const accountLabel = item => item.email || item.name || "未命名账号";
-  const accountMeta = item => item.provider === "codex" ? "Codex" : "Antigravity";
+  const selectedScopes = rule => Array.isArray(rule.scopes) && rule.scopes.length ? rule.scopes.filter(value => scopesFor(rule.provider).some(item => item.value === value)) : scopesFor(rule.provider).map(item => item.value);
   function closePicker() { if (openPicker) { openPicker.menu.hidden = true; openPicker.button.setAttribute("aria-expanded", "false"); openPicker = null; } }
   document.addEventListener("click", event => { if (openPicker && !openPicker.root.contains(event.target)) closePicker(); });
   document.addEventListener("keydown", event => { if (event.key === "Escape") closePicker(); });
-  function accountPicker(rule) {
+  function chevron() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "select-chevron"); svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "1.5"); const path = document.createElementNS("http://www.w3.org/2000/svg", "path"); path.setAttribute("d", "m4 6 4 4 4-4"); svg.append(path); return svg;
+  }
+  function picker(rule, config) {
     const root = document.createElement("div"); root.className = "select-shell";
     const button = document.createElement("button"); button.type = "button"; button.className = "select-button"; button.setAttribute("aria-haspopup", "listbox"); button.setAttribute("aria-expanded", "false");
-    const value = document.createElement("span"); value.className = "select-value"; const title = document.createElement("strong"); const subtitle = document.createElement("small"); value.append(title, subtitle);
-    const chevron = document.createElementNS("http://www.w3.org/2000/svg", "svg"); chevron.setAttribute("class", "select-chevron"); chevron.setAttribute("viewBox", "0 0 16 16"); chevron.setAttribute("fill", "none"); chevron.setAttribute("stroke", "currentColor"); chevron.setAttribute("stroke-width", "1.5"); const path = document.createElementNS("http://www.w3.org/2000/svg", "path"); path.setAttribute("d", "m4 6 4 4 4-4"); chevron.append(path); button.append(value, chevron);
+    const value = document.createElement("span"); value.className = "select-value"; const title = document.createElement("strong"); const subtitle = document.createElement("small"); value.append(title, subtitle); button.append(value, chevron());
     const menu = document.createElement("div"); menu.className = "select-menu"; menu.setAttribute("role", "listbox"); menu.hidden = true;
-    const renderValue = () => { const selected = accounts.find(item => item.email === rule.email && item.provider === rule.provider); title.textContent = selected ? accountLabel(selected) : rule.email || "选择账号"; subtitle.textContent = selected ? accountMeta(selected) : rule.email ? providerName(rule.provider) : "从凭证列表中选择"; };
-    const candidates = () => accounts.filter(item => item.provider === rule.provider && (item.email === rule.email || !draft.some(other => other !== rule && other.email === item.email && other.provider === item.provider)));
-    const renderMenu = () => { menu.replaceChildren(); const rows = candidates(); if (!rows.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "当前渠道没有可用账号"; menu.append(empty); return; } rows.forEach(item => { const option = document.createElement("button"); option.type = "button"; option.className = "select-option"; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(item.email === rule.email && item.provider === rule.provider)); const copy = document.createElement("span"); const name = document.createElement("strong"); name.textContent = accountLabel(item); const meta = document.createElement("small"); meta.textContent = item.name; copy.append(name, meta); const mark = document.createElement("em"); mark.textContent = item.disabled ? "已停用" : "可用"; option.append(copy, mark); option.onclick = () => { rule.email = item.email; rule.provider = item.provider; renderValue(); closePicker(); }; menu.append(option); }); };
+    const renderValue = () => { title.textContent = config.valueLabel(); subtitle.textContent = config.valueHint(); button.title = [title.textContent, subtitle.textContent].filter(Boolean).join(" · "); };
+    const renderMenu = () => { menu.replaceChildren(); const rows = config.options(); if (!rows.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = config.empty; menu.append(empty); return; } rows.forEach(item => { const option = document.createElement("button"); option.type = "button"; option.className = "select-option"; option.setAttribute("role", "option"); option.setAttribute("aria-selected", String(config.isSelected(item))); const copy = document.createElement("span"); const name = document.createElement("strong"); name.textContent = item.label; copy.append(name); if (item.hint) { const hint = document.createElement("small"); hint.textContent = item.hint; copy.append(hint); } option.append(copy); if (item.meta) { const mark = document.createElement("em"); mark.textContent = item.meta; option.append(mark); } if (config.multiple) { const check = document.createElement("span"); check.className = "select-check"; check.textContent = config.isSelected(item) ? "✓" : ""; option.append(check); } option.onclick = event => { event.stopPropagation(); config.select(item); renderValue(); renderMenu(); if (!config.multiple) { closePicker(); } }; menu.append(option); }); };
     button.onclick = event => { event.stopPropagation(); if (openPicker && openPicker.menu === menu) { closePicker(); return; } closePicker(); renderMenu(); menu.hidden = false; button.setAttribute("aria-expanded", "true"); openPicker = { root, menu, button }; };
     renderValue(); root.append(button, menu); return { root, renderValue };
+  }
+  function accountPicker(rule) {
+    return picker(rule, {
+      multiple: false,
+      empty: "当前供应商没有可用账号",
+      options: () => accounts.filter(item => item.provider === rule.provider && (item.email === rule.email || !draft.some(other => other !== rule && other.email === item.email && other.provider === item.provider))).map(item => ({value: item.email, label: accountLabel(item), hint: item.name, meta: item.disabled ? "已停用" : "可用"})),
+      isSelected: item => item.value === rule.email,
+      select: item => { rule.email = item.value; },
+      valueLabel: () => { const selected = accounts.find(item => item.email === rule.email && item.provider === rule.provider); return selected ? accountLabel(selected) : rule.email || "选择账号"; },
+      valueHint: () => { const selected = accounts.find(item => item.email === rule.email && item.provider === rule.provider); return selected ? selected.name : rule.email ? "账号不在当前凭证列表" : "从当前供应商的凭证中选择"; }
+    });
+  }
+  function providerPicker(rule, onChange) {
+    return picker(rule, {
+      multiple: false,
+      empty: "暂无供应商",
+      options: () => PROVIDERS.map(item => ({value: item.value, label: item.label})),
+      isSelected: item => item.value === rule.provider,
+      select: item => { rule.provider = item.value; rule.email = ""; rule.scopes = scopesFor(item.value).map(scope => scope.value); onChange(); },
+      valueLabel: () => providerName(rule.provider),
+      valueHint: () => (PROVIDERS.find(item => item.value === rule.provider) || {}).hint || ""
+    });
+  }
+  function scopePicker(rule) {
+    return picker(rule, {
+      multiple: true,
+      empty: "暂无模型组",
+      options: () => scopesFor(rule.provider).map(item => ({value: item.value, label: item.label, hint: item.hint})),
+      isSelected: item => selectedScopes(rule).includes(item.value),
+      select: item => { const chosen = new Set(selectedScopes(rule)); if (chosen.has(item.value)) { if (chosen.size > 1) chosen.delete(item.value); } else { chosen.add(item.value); } rule.scopes = scopesFor(rule.provider).map(scope => scope.value).filter(value => chosen.has(value)); },
+      valueLabel: () => { const chosen = selectedScopes(rule); const rows = scopesFor(rule.provider); if (rows.length === 1) return rows[0].label; if (chosen.length === rows.length) return "全部模型组"; return rows.filter(item => chosen.includes(item.value)).map(item => item.label).join(" + ") || "选择模型组"; },
+      valueHint: () => { const rows = scopesFor(rule.provider); if (rows.length === 1) return (PROVIDERS.find(item => item.value === rule.provider) || {}).whole ? "整份凭证统一保护" : "仅此模型组"; return selectedScopes(rule).length === rows.length ? rows.map(item => item.label).join(" 与 ") + " 均保护" : "仅保护已选模型组"; }
+    });
   }
   function rules() {
     el("rules").replaceChildren();
     if (!draft.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "还没有保护规则。添加账号后，插件才会对它进行采样和保护。"; el("rules").append(empty); return; }
     draft.forEach((rule, index) => {
       const row = document.createElement("div"); row.className = "rule";
-      const account = document.createElement("div"); account.className = "rule-field account"; const accountLabelElement = document.createElement("span"); accountLabelElement.className = "rule-field-label"; accountLabelElement.textContent = "账号邮箱"; const picker = accountPicker(rule); account.append(accountLabelElement, picker.root);
-      const providerField = document.createElement("div"); providerField.className = "rule-field"; const providerLabel = document.createElement("span"); providerLabel.className = "rule-field-label"; providerLabel.textContent = "供应商"; const provider = document.createElement("select"); provider.className = "cell-select"; ["codex", "antigravity"].forEach(name => { const option = document.createElement("option"); option.value = name; option.textContent = providerName(name); provider.append(option); }); provider.value = rule.provider; provider.onchange = () => { rule.provider = provider.value; rule.email = ""; picker.renderValue(); }; provider.setAttribute("aria-label", "供应商"); providerField.append(providerLabel, provider);
-      const enabledField = document.createElement("div"); enabledField.className = "rule-field switch-field"; const enabledLabel = document.createElement("span"); enabledLabel.className = "rule-field-label"; enabledLabel.textContent = "保护"; const switchLabel = document.createElement("label"); switchLabel.className = "switch"; const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = rule.enabled; checkbox.setAttribute("aria-label", "启用保护"); const track = document.createElement("span"); track.className = "switch-track"; const stateText = document.createElement("span"); stateText.textContent = rule.enabled ? "已开启" : "已关闭"; checkbox.onchange = () => { rule.enabled = checkbox.checked; stateText.textContent = checkbox.checked ? "已开启" : "已关闭"; }; switchLabel.append(checkbox, track, stateText); enabledField.append(enabledLabel, switchLabel);
-      const numberField = (field, label) => { const wrap = document.createElement("div"); wrap.className = "rule-field number"; const labelElement = document.createElement("span"); labelElement.className = "rule-field-label"; labelElement.textContent = label; const input = document.createElement("input"); input.type = "number"; input.className = "cell-input"; input.min = "0"; input.max = "99.99"; input.step = "0.1"; input.value = rule[field]; input.setAttribute("aria-label", label); input.oninput = () => { rule[field] = Number(input.value); }; wrap.append(labelElement, input); return wrap; };
-      const five = numberField("reserve_five_hour", "五小时保留 %"), weekly = numberField("reserve_weekly", "每周保留 %");
+      const field = (label, className = "") => { const wrap = document.createElement("div"); wrap.className = "rule-field" + (className ? " " + className : ""); const text = document.createElement("span"); text.className = "rule-field-label"; text.textContent = label; wrap.append(text); return wrap; };
+      const providerField = field("供应商", "provider-field"); const provider = providerPicker(rule, () => { rules(); }); providerField.append(provider.root);
+      const account = field("账号", "account"); const accountChoice = accountPicker(rule); account.append(accountChoice.root);
+      const scope = field("保护模型组", "scope-field"); scope.append(scopePicker(rule).root);
+      const enabledField = field("保护", "switch-field"); const switchLabel = document.createElement("label"); switchLabel.className = "switch"; const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = rule.enabled; checkbox.setAttribute("aria-label", "启用保护"); const track = document.createElement("span"); track.className = "switch-track"; const stateText = document.createElement("span"); stateText.textContent = rule.enabled ? "已开启" : "已关闭"; checkbox.onchange = () => { rule.enabled = checkbox.checked; stateText.textContent = checkbox.checked ? "已开启" : "已关闭"; }; switchLabel.append(checkbox, track, stateText); enabledField.append(switchLabel);
+      const numberField = (key, label, areaClass) => { const wrap = field(label, "number " + areaClass); const input = document.createElement("div"); input.className = "number-input"; const box = document.createElement("input"); box.type = "number"; box.className = "cell-input"; box.min = "0"; box.max = "99.99"; box.step = "0.1"; box.value = rule[key]; box.setAttribute("aria-label", label); const unit = document.createElement("span"); unit.textContent = "%"; box.oninput = () => { rule[key] = Number(box.value); }; input.append(box, unit); wrap.append(input); return wrap; };
+      const five = numberField("reserve_five_hour", "五小时保留", "five"); const weekly = numberField("reserve_weekly", "每周保留", "weekly");
       const actions = document.createElement("div"); actions.className = "rule-field actions"; const remove = document.createElement("button"); remove.type = "button"; remove.className = "rule-delete"; remove.setAttribute("aria-label", "删除规则"); remove.title = "删除规则"; const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 20 20"); svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "1.6"); svg.setAttribute("stroke-linecap", "round"); for (const d of ["M3 5h14", "M8 5V3h4v2", "m6 8 .5 8h7L14 8"]) { const p = document.createElementNS("http://www.w3.org/2000/svg", "path"); p.setAttribute("d", d); svg.append(p); } remove.append(svg); remove.onclick = () => { draft.splice(index, 1); rules(); }; actions.append(remove);
-      row.append(account, providerField, enabledField, five, weekly, actions); el("rules").append(row);
+      row.append(providerField, account, scope, enabledField, five, weekly, actions); el("rules").append(row);
     });
   }
   function quota(listElement, windows) {
@@ -90,14 +140,14 @@
   function logOut() { clearSavedManagementKey(); key = ""; draft = []; etag = ""; accounts = []; el("rules").replaceChildren(); el("observations").replaceChildren(); el("app").hidden = true; el("authGate").hidden = false; showAuth("manual", "接入管理会话", "已退出当前管理会话。请输入管理令牌，或重新登录 CPAMP。"); el("manualKey").focus(); }
   async function load() {
     show("正在读取运行状态…");
-    const [status, settings, data, inventory] = await Promise.all([request("/status"), request("/settings"), request("/observations"), request("/accounts")]);
-    setStatus(status.body); draft = settings.body.settings.rules; accounts = inventory.body.accounts || []; rules(); observations(data.body.observations); etag = settings.response.headers.get("ETag") || '"' + settings.body.revision + '"'; show("已加载最新状态", "success");
+    const [status, settings, data, inventory, catalog] = await Promise.all([request("/status"), request("/settings"), request("/observations"), request("/accounts"), request("/catalog").catch(() => ({body: {providers: FALLBACK_PROVIDERS}}))]);
+    setStatus(status.body); setCatalog(catalog.body.providers); draft = settings.body.settings.rules; accounts = inventory.body.accounts || []; rules(); observations(data.body.observations); etag = settings.response.headers.get("ETag") || '"' + settings.body.revision + '"'; show("已加载最新状态", "success");
   }
   el("manualConnect").addEventListener("click", () => connectWithKey(el("manualKey").value, el("rememberKey").checked));
   el("manualKey").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); connectWithKey(el("manualKey").value, el("rememberKey").checked); } });
   el("retrySession").addEventListener("click", connectFromSession); el("logout").addEventListener("click", logOut);
   el("refresh").onclick = () => load().catch(error => show(error.message, "error"));
-  el("add").onclick = () => { draft.push({email: "", provider: "codex", enabled: true, reserve_five_hour: 8, reserve_weekly: 3}); rules(); };
-  el("save").onclick = async () => { try { await request("/settings", {method: "PUT", headers: {"If-Match": etag}, body: JSON.stringify({schema: 1, rules: draft})}); await load(); show("已保存，下一次检查将使用新规则", "success"); } catch (error) { show(error.message, "error"); } };
+  el("add").onclick = () => { const provider = PROVIDERS[0] || {value: "codex"}; draft.push({email: "", provider: provider.value, scopes: scopesFor(provider.value).map(scope => scope.value), enabled: true, reserve_five_hour: 8, reserve_weekly: 3}); rules(); };
+  el("save").onclick = async () => { const missing = draft.findIndex(rule => !String(rule.email || "").trim()); if (missing >= 0) { show("请先为第 " + (missing + 1) + " 条规则选择账号", "error"); const input = el("rules").children[missing] && el("rules").children[missing].children[1].children[1].children[0]; if (input) input.focus(); return; } try { await request("/settings", {method: "PUT", headers: {"If-Match": etag}, body: JSON.stringify({schema: 1, rules: draft})}); await load(); show("已保存，下一次检查将使用新规则", "success"); } catch (error) { show(error.message, "error"); } };
   connectFromSession();
 })();

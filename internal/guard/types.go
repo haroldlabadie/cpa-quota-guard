@@ -12,14 +12,134 @@ const MaxJournal = 1024
 const FiveHourMS int64 = 18000000
 const WeekMS int64 = 604800000
 
-var Patterns = map[string][]string{"gemini": {"gemini-*"}, "third_party": {"claude-*", "gpt-*"}}
+type ScopeSpec struct {
+	Key      string   `json:"key"`
+	Label    string   `json:"label"`
+	Hint     string   `json:"hint"`
+	Patterns []string `json:"patterns,omitempty"`
+}
+
+type ProviderSpec struct {
+	Key             string      `json:"key"`
+	Label           string      `json:"label"`
+	Hint            string      `json:"hint"`
+	WholeCredential bool        `json:"whole_credential"`
+	Scopes          []ScopeSpec `json:"scopes"`
+}
+
+// ProviderCatalog is the single source of truth for provider labels and the
+// model groups that can be selected independently. Probe and mutation adapters
+// remain provider-specific; the settings schema, validation and management UI
+// consume this catalog so additional groups do not require a second enum.
+var ProviderCatalog = []ProviderSpec{
+	{Key: "codex", Label: "Codex", Hint: "整份凭证额度", WholeCredential: true, Scopes: []ScopeSpec{{Key: "all", Label: "全部额度", Hint: "整份凭证共用五小时与每周窗口"}}},
+	{Key: "antigravity", Label: "Antigravity", Hint: "Gemini 与 Claude / GPT 分组额度", Scopes: []ScopeSpec{{Key: "gemini", Label: "Gemini", Hint: "Gemini 模型组", Patterns: []string{"gemini-*"}}, {Key: "third_party", Label: "Claude / GPT", Hint: "Claude 与 GPT 模型组", Patterns: []string{"claude-*", "gpt-*"}}}},
+}
+
+// Patterns is the union used to validate persisted family-control evidence. The
+// provider-specific lookup below remains authoritative when applying a rule.
+var Patterns = buildPatterns()
+
+func buildPatterns() map[string][]string {
+	out := map[string][]string{}
+	for _, provider := range ProviderCatalog {
+		for _, scope := range provider.Scopes {
+			out[scope.Key] = append(out[scope.Key], scope.Patterns...)
+		}
+	}
+	return out
+}
+
+func ProviderDescriptors() []ProviderSpec {
+	out := make([]ProviderSpec, 0, len(ProviderCatalog))
+	for _, provider := range ProviderCatalog {
+		copy := provider
+		copy.Scopes = append([]ScopeSpec{}, provider.Scopes...)
+		out = append(out, copy)
+	}
+	return out
+}
+
+func LookupProvider(key string) (ProviderSpec, bool) {
+	for _, provider := range ProviderCatalog {
+		if provider.Key == key {
+			return provider, true
+		}
+	}
+	return ProviderSpec{}, false
+}
+
+func SupportedProvider(provider string) bool {
+	_, ok := LookupProvider(provider)
+	return ok
+}
+
+func IsWholeCredential(provider string) bool {
+	p, ok := LookupProvider(provider)
+	return ok && p.WholeCredential
+}
+
+func SupportedScopes(provider string) []string {
+	p, ok := LookupProvider(provider)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(p.Scopes))
+	for _, scope := range p.Scopes {
+		out = append(out, scope.Key)
+	}
+	return out
+}
+
+func ScopePatterns(provider, scope string) []string {
+	p, ok := LookupProvider(provider)
+	if !ok {
+		return nil
+	}
+	for _, item := range p.Scopes {
+		if item.Key == scope {
+			return append([]string{}, item.Patterns...)
+		}
+	}
+	return nil
+}
+
+func KnownScope(provider, scope string) bool {
+	for _, item := range SupportedScopes(provider) {
+		if item == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveScopes treats an omitted scopes field as all supported families.
+// This keeps existing settings files protective after the schema extension.
+func EffectiveScopes(provider string, scopes []string) []string {
+	supported := SupportedScopes(provider)
+	if len(scopes) == 0 {
+		return supported
+	}
+	selected := map[string]bool{}
+	for _, scope := range scopes {
+		selected[scope] = true
+	}
+	out := []string{}
+	for _, scope := range supported {
+		if selected[scope] {
+			out = append(out, scope)
+		}
+	}
+	return out
+}
 
 type Rule struct {
-	Email           string  `json:"email"`
-	Provider        string  `json:"provider"`
-	Enabled         bool    `json:"enabled"`
-	ReserveFiveHour float64 `json:"reserve_five_hour"`
-	ReserveWeekly   float64 `json:"reserve_weekly"`
+	Email           string   `json:"email"`
+	Provider        string   `json:"provider"`
+	Scopes          []string `json:"scopes,omitempty"`
+	Enabled         bool     `json:"enabled"`
+	ReserveFiveHour float64  `json:"reserve_five_hour"`
+	ReserveWeekly   float64  `json:"reserve_weekly"`
 }
 type Settings struct {
 	Schema int    `json:"schema"`

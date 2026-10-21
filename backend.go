@@ -50,7 +50,7 @@ func (b *backend) List(ctx context.Context) ([]guard.Entry, error) {
 		if e.Provider == "" {
 			e.Provider = e.Type
 		}
-		if e.Provider != "codex" && e.Provider != "antigravity" {
+		if !guard.SupportedProvider(e.Provider) {
 			continue
 		}
 		if e.RuntimeOnly || e.Source != "file" {
@@ -178,14 +178,17 @@ func (b *backend) Patch(ctx context.Context, a guard.Account, fields map[string]
 }
 func (b *backend) upstream(ctx context.Context, a guard.Account, target, method string, data any) (map[string]any, error) {
 	headers := map[string]string{"Authorization": "Bearer $TOKEN$", "Content-Type": "application/json"}
-	if a.Entry.Provider == "codex" {
+	switch a.Entry.Provider {
+	case "codex":
 		if a.AccountID == "" {
 			return nil, errors.New("missing account_id")
 		}
 		headers["Chatgpt-Account-Id"] = a.AccountID
 		headers["User-Agent"] = "codex_cli_rs/0.116.0"
-	} else {
+	case "antigravity":
 		headers["User-Agent"] = "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)"
+	default:
+		return nil, errors.New("unsupported provider adapter")
 	}
 	request := map[string]any{"auth_index": a.Entry.AuthIndex, "method": method, "url": target, "header": headers}
 	if data != nil {
@@ -215,7 +218,8 @@ func (b *backend) upstream(ctx context.Context, a guard.Account, target, method 
 }
 func (b *backend) Probe(ctx context.Context, a guard.Account) (guard.Sample, error) {
 	s := guard.Sample{Windows: []guard.Window{}, Sources: map[string]string{}}
-	if a.Entry.Provider == "codex" {
+	switch a.Entry.Provider {
+	case "codex":
 		body, err := b.upstream(ctx, a, "https://chatgpt.com/backend-api/wham/usage", "GET", nil)
 		if err != nil {
 			return s, err
@@ -224,6 +228,9 @@ func (b *backend) Probe(ctx context.Context, a guard.Account) (guard.Sample, err
 		s.Plan, _ = body["plan_type"].(string)
 		s.ObservedMS = time.Now().UnixMilli()
 		return s, err
+	case "antigravity":
+	default:
+		return s, errors.New("unsupported provider adapter")
 	}
 	if a.ProjectID == "" {
 		return s, errors.New("missing project_id")
@@ -301,9 +308,14 @@ func (b *backend) Publish(ctx context.Context, a guard.Account, s guard.Sample) 
 		windows = append(windows, row)
 	}
 	account := map[string]any{"auth_file_snapshot": a.Entry.Name, "auth_provider_snapshot": a.Entry.Provider, "account_snapshot": a.Entry.Email, "auth_index": a.Entry.AuthIndex, "auth_account_id_snapshot": a.AccountID, "auth_project_id_snapshot": a.ProjectID}
-	inventoryScope := "antigravity:quota-windows"
-	if a.Entry.Provider == "codex" {
+	inventoryScope := ""
+	switch a.Entry.Provider {
+	case "codex":
 		inventoryScope = "codex:rate-limits"
+	case "antigravity":
+		inventoryScope = "antigravity:quota-windows"
+	default:
+		return errors.New("unsupported provider adapter")
 	}
 	body := map[string]any{"entries": []any{map[string]any{"row_key": a.Entry.Name, "provider": a.Entry.Provider, "account": account, "observation": map[string]any{"source": "api_query", "source_observation_id": fmt.Sprintf("guard-plugin:%s:%d", a.Entry.AuthIndex, s.ObservedMS), "observed_at_ms": s.ObservedMS, "inventory_scope_key": inventoryScope, "inventory_mode": "partial"}, "windows": windows}}}
 	return b.call(ctx, "/v0/management/quota-snapshots", body, http.MethodPost, nil)

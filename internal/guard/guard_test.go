@@ -420,6 +420,112 @@ func TestQuotaParsers(t *testing.T) {
 		t.Fatal("partial invalid family accepted")
 	}
 }
+func TestEffectiveScopesKeepsLegacyRulesProtective(t *testing.T) {
+	if got := EffectiveScopes("antigravity", nil); strings.Join(got, ",") != "gemini,third_party" {
+		t.Fatalf("legacy scopes = %v", got)
+	}
+	if got := EffectiveScopes("antigravity", []string{"third_party"}); strings.Join(got, ",") != "third_party" {
+		t.Fatalf("selected scopes = %v", got)
+	}
+	if got := EffectiveScopes("codex", nil); strings.Join(got, ",") != "all" {
+		t.Fatalf("codex scopes = %v", got)
+	}
+}
+
+func TestProviderCatalogKeepsValidationAndPatternsAligned(t *testing.T) {
+	for _, provider := range ProviderCatalog {
+		if !SupportedProvider(provider.Key) || len(provider.Scopes) == 0 {
+			t.Fatalf("invalid provider catalog entry: %s", provider.Key)
+		}
+		for _, scope := range provider.Scopes {
+			if !KnownScope(provider.Key, scope.Key) || strings.Join(ScopePatterns(provider.Key, scope.Key), ",") != strings.Join(scope.Patterns, ",") {
+				t.Fatalf("scope catalog mismatch: %s/%s", provider.Key, scope.Key)
+			}
+		}
+	}
+	if SupportedProvider("unknown") || IsWholeCredential("unknown") {
+		t.Fatal("unknown provider accepted")
+	}
+}
+func TestCatalogRejectsScopeFromAnotherProvider(t *testing.T) {
+	if KnownScope("codex", "gemini") || KnownScope("antigravity", "all") {
+		t.Fatal("cross-provider scope accepted")
+	}
+}
+
+func TestValidateSettingsScopes(t *testing.T) {
+	valid := settings("antigravity")
+	valid.Rules[0].Scopes = []string{"gemini", "third_party"}
+	if err := ValidateSettings(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, scopes := range [][]string{{"gemini", "gemini"}, {"gemini", "unknown"}, {"all"}} {
+		bad := settings("antigravity")
+		bad.Rules[0].Scopes = scopes
+		if err := ValidateSettings(bad); err == nil {
+			t.Fatalf("invalid scopes accepted: %v", scopes)
+		}
+	}
+	codex := settings("codex")
+	codex.Rules[0].Scopes = []string{"all"}
+	if err := ValidateSettings(codex); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFamilyScopeSelectionIsolation(t *testing.T) {
+	t.Run("gemini-only", func(t *testing.T) {
+		f := &fakeBackend{raw: rawAuth("antigravity"), mtime: 10, sample: familySample(90, 8)}
+		e := engine(t, f)
+		s := settings("antigravity")
+		s.Rules[0].Scopes = []string{"gemini"}
+		e.SetSettings(s)
+		tick(t, e)
+		a, _ := f.Read(context.Background(), f.entry())
+		if len(a.Snapshot.Protected.Excluded) != 0 {
+			t.Fatalf("unselected family was protected: %v", a.Snapshot.Protected.Excluded)
+		}
+		f.sample = familySample(8, 90)
+		tick(t, e)
+		a, _ = f.Read(context.Background(), f.entry())
+		if strings.Join(a.Snapshot.Protected.Excluded, ",") != "gemini-*" {
+			t.Fatalf("selected family was not protected: %v", a.Snapshot.Protected.Excluded)
+		}
+	})
+	t.Run("third-party-only", func(t *testing.T) {
+		f := &fakeBackend{raw: rawAuth("antigravity"), mtime: 10, sample: familySample(8, 90)}
+		e := engine(t, f)
+		s := settings("antigravity")
+		s.Rules[0].Scopes = []string{"third_party"}
+		e.SetSettings(s)
+		tick(t, e)
+		a, _ := f.Read(context.Background(), f.entry())
+		if len(a.Snapshot.Protected.Excluded) != 0 {
+			t.Fatalf("unselected family was protected: %v", a.Snapshot.Protected.Excluded)
+		}
+		f.sample = familySample(90, 8)
+		tick(t, e)
+		a, _ = f.Read(context.Background(), f.entry())
+		if strings.Join(a.Snapshot.Protected.Excluded, ",") != "claude-*,gpt-*" {
+			t.Fatalf("selected family was not protected: %v", a.Snapshot.Protected.Excluded)
+		}
+	})
+}
+
+func TestUnselectedFamilyUnknownQuotaDoesNotProtect(t *testing.T) {
+	f := &fakeBackend{raw: rawAuth("antigravity"), mtime: 10, sample: familySample(90, 90)}
+	e := engine(t, f)
+	s := settings("antigravity")
+	s.Rules[0].Scopes = []string{"gemini"}
+	e.SetSettings(s)
+	f.sample.Windows = f.sample.Windows[:2] // only Gemini remains complete
+	tick(t, e)
+	a, _ := f.Read(context.Background(), f.entry())
+	if len(a.Snapshot.Protected.Excluded) != 0 {
+		t.Fatalf("missing unselected family caused protection: %v", a.Snapshot.Protected.Excluded)
+	}
+}
+
 func TestStrictSettings(t *testing.T) {
 	for _, raw := range []string{`{"schema":1,"rules":[],"secret":"x"}`, `{"schema":1,"rules":[]} {}`, `{"schema":1,"rules":null}`} {
 		var s Settings

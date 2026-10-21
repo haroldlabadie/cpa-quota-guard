@@ -106,7 +106,7 @@ func MakeAccount(entry Entry, raw map[string]any, mtime int64) (Account, error) 
 			return a, errors.New("incomplete family control")
 		}
 		for _, scope := range c.Blocked {
-			if _, ok := Patterns[scope]; !ok {
+			if !KnownScope(entry.Provider, scope) {
 				return a, errors.New("unknown controlled family")
 			}
 		}

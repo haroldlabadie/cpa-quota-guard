@@ -1,11 +1,12 @@
 # CPA 额度保护
 
-独立的 CPA 原生 Go C ABI 插件，为显式白名单账号保留额度。当前 `0.3.0`，Linux amd64，ABI 1、RPC schema 6；宿主最低接口基线为 CPA v8.0.33 / `2422c6b`。它不生成模型请求，不管理预热计划，可单独安装，也可与 [cpa-warmup](https://github.com/haroldlabadie/cpa-warmup) 同时运行。
+独立的 CPA 原生 Go C ABI 插件，为显式白名单账号保留额度。当前 `0.3.1`，Linux amd64，ABI 1、RPC schema 6；宿主最低接口基线为 CPA v8.0.33 / `2422c6b`。它不生成模型请求，不管理预热计划，可单独安装，也可与 [cpa-warmup](https://github.com/haroldlabadie/cpa-warmup) 同时运行。
 
 ## 行为
 
 - Codex：五小时剩余 ≤8% 或每周剩余 ≤3% 时禁用整凭证。所有新鲜相关窗口都高于阈值后，才恢复可证明属于本插件的限制。
-- Antigravity：Gemini 与 Claude/GPT 两族分别保护，合并 `excluded_models`；保留原有人工排除，不因一族额度不足停用另一族。
+- Antigravity：Gemini 与 Claude/GPT 两个模型组分别保护，合并 `excluded_models`；保留原有人工排除，不因一组额度不足停用另一组。规则可用 `scopes` 只选择需要保护的组；省略该字段时按旧行为保护所有组。
+- 供应商与模型组由 `ProviderCatalog` 统一声明，目前 Codex 为整凭证 `all`，Antigravity 为 `gemini`、`third_party`。给已有供应商增加模型组只需扩展目录；新增供应商仍须实现对应的额度查询与凭证 mutation 适配器，目录不会替代供应商协议。
 - 未知、缺桶、过期或探测失败的额度按需要保护处理，绝不假设剩余 100%。单次管理接口瞬断时，同一身份且 90 秒内的既有样本继续参与判断并保留错误；超过新鲜度或身份变化即失败关闭。Free 等缺少五小时窗口的 Codex 无法通过此保护策略的安全恢复条件。Codex 整凭证判定只使用 `scope=all` 的主五小时/每周窗口；附加池仅展示，解析失败或耗尽不会冒充主池，主池缺失仍按未知处理。
 - 凭证修改采用持久 intent：先原子写入含完整旧/目标保护字段、身份、先前所有权和 mutation ID 的事务，再 PATCH 必要字段并回读完整保护字段。PATCH 超时或回读失败保留事务，重启后先 reconcile；只接受“严格旧快照”“完整目标快照且 mutation 证据吻合”或显式冲突。无法证明的变化进入 sticky conflict，不会被后续字段恢复自动认领。宿主无 CAS，最后回读至 PATCH 之间的人工并发写入仍是已知边界。
 - 只操作配置白名单。停用插件、关闭或删除规则均保留已有停用和模型排除，避免停守护成为绕过保护的方式。
@@ -15,13 +16,15 @@
 
 ## 安装
 
-下载对应版本的 `cpa-quota-guard_0.3.0_linux_amd64.zip`，按同 Release 的 `checksums.txt` 校验；包内另含 `BINARY_SHA256SUMS`。zip 根目录只有一个 `.so`，兼容 CPA Plugin Store。`.so` 和数据目录放入 CPA 插件挂载目录，勿覆盖其他插件。
+下载对应版本的 `cpa-quota-guard_0.3.1_linux_amd64.zip`，按同 Release 的 `checksums.txt` 校验；包内另含 `BINARY_SHA256SUMS`。zip 根目录只有一个 `.so`，兼容 CPA Plugin Store。`.so` 和数据目录放入 CPA 插件挂载目录，勿覆盖其他插件。
 
 ```sh
 install -d -m 0700 /CLIProxyAPI/plugins/cpa-quota-guard-data
-install -m 0644 cpa-quota-guard.so /CLIProxyAPI/plugins/cpa-quota-guard-v0.3.0.so
+install -m 0644 cpa-quota-guard.so /CLIProxyAPI/plugins/cpa-quota-guard-v0.3.1.so
 install -m 0600 settings.example.json /CLIProxyAPI/plugins/cpa-quota-guard-data/settings.json
 ```
+
+`settings.json` 每个规则还可带 `scopes` 数组：Codex 使用 `["all"]`；Antigravity 使用 `["gemini"]`、`["third_party"]` 或两者。省略 `scopes` 时按全部支持组处理，兼容旧设置。
 
 修改 `settings.json` 中的虚构账号邮箱，只列入需要保护的账号。用安全的文件操作把 **CPAMP panel admin credential** 写入 `management-key.txt`，权限必须 0600；不要把 Key 写入命令历史、YAML、Git 或页面。该凭据不保证与 CPA 原生管理 Secret 相同。
 
@@ -33,7 +36,7 @@ plugins:
   dir: /CLIProxyAPI/plugins
   configs:
     cpa-quota-guard:
-      version: 0.3.0
+      version: 0.3.1
       enabled: true
       priority: 0
       mode: observe
@@ -49,16 +52,16 @@ plugins:
 首次以 `mode: observe` 验证库存、身份、额度与页面。observe 不 PATCH 凭证、不发布面板快照、不写运行 state；应使用独立临时数据目录做上线前观测。迁移正式状态、确认没有旧守护同时运行，再切换到 `mode: apply`。apply 要求显式存在 `settings.json` 和 `state.json`；缺失状态时停止，不把曾有的所有权默认为空。首次安装到全新独立目录时，可用 `guard-state initialize-state` 输出带 `fresh-install` 标记的初始状态，经新文件安全写入后再启动。已有安装丢失状态必须从备份/迁移恢复，不能运行初始化命令清空历史。保留比例是剩余百分比，`8` 表示剩余 8% 时保护。
 
 ```json
-{"schema":1,"rules":[{"email":"person@example.invalid","provider":"codex","enabled":true,"reserve_five_hour":8,"reserve_weekly":3}]}
+{"schema":1,"rules":[{"email":"person@example.invalid","provider":"codex","scopes":["all"],"enabled":true,"reserve_five_hour":8,"reserve_weekly":3},{"email":"person@example.invalid","provider":"antigravity","scopes":["gemini","third_party"],"enabled":true,"reserve_five_hour":8,"reserve_weekly":3}]}
 ```
 
 不要让两份守护同时修改相同账号。停止插件会取消 HTTP、等待 worker 退出，再释放 `worker.lock`；宿主热更新须调用 `plugin.quiesce`，最终 shutdown 同样幂等停止。
 
 ## 管理页面
 
-设置页把账号选择改为邮箱下拉，供应商与账号联动；规则和采样以响应式卡片展示，长文件名会截断为单行。账号接口只返回 name、provider、email、disabled 等非敏感字段，不返回 auth_index、Token 或完整凭证 JSON。登录门面自动复用同源 CPAMP 会话，手动令牌只保存在浏览器本地。
+设置页统一使用自定义下拉，并按“供应商 → 账号 → 保护模型组”配置规则。切换供应商会清空账号，并重置为该供应商的全部模型组；Codex 只有整份凭证的 `all`，Antigravity 可在 `gemini` 与 `third_party`（Claude / GPT）之间多选，至少保留一组。规则和采样以响应式卡片展示，长账号与文件名截断为单行。账号接口只返回 name、provider、email、disabled 等非敏感字段，不返回 auth_index、Token 或完整凭证 JSON。登录门面自动复用同源 CPAMP 会话，手动令牌只保存在浏览器本地。
 
-CPA 插件菜单的“额度保护”提供账号邮箱、供应商、保护开关、五小时/每周保留百分比、账号剩余及原因。
+CPA 插件菜单的“额度保护”按供应商、账号、保护模型组、保护开关、五小时保留百分比和每周保留百分比的顺序展示，并列出账号剩余及原因。两个百分比输入始终标注“五小时保留”“每周保留”和 `%`。
 
 | 接口 | 用途 |
 | --- | --- |
@@ -67,6 +70,7 @@ CPA 插件菜单的“额度保护”提供账号邮箱、供应商、保护开�
 | `PUT /v0/management/plugins/cpa-quota-guard/settings` | 必须带精确 `If-Match`，无匹配返回 412，缺失返回 428 |
 | `GET /v0/management/plugins/cpa-quota-guard/observations` | 脱敏账号身份摘要、额度、原因、最近动作 |
 | `GET /v0/management/plugins/cpa-quota-guard/accounts` | 非敏感账号投影：name、provider、email、disabled；不含 auth_index、Token 或完整凭证 |
+| `GET /v0/management/plugins/cpa-quota-guard/catalog` | 页面使用的供应商、模型组标签与整凭证标记；不含探测或 mutation 能力 |
 
 `observations` 的 schema 为 1，每个观测含 `name/provider/auth_index/identity/updated_ms/sample`，以及按状态出现的 `manual/action/transaction_id/transaction_phase/orphan_reason`；`sample` 为 `observed_ms/windows`。窗口保留 `id/kind/scope/remaining/end_ms/duration_ms`。消费方必须自行校验身份、完整性和 ≤90 秒新鲜度，不能把无观测当有可用额度。该接口是可选复用优化，warmup 也能独立采样。
 
