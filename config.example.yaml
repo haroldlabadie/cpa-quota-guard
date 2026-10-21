@@ -4,7 +4,7 @@ plugins:
   dir: /CLIProxyAPI/plugins
   configs:
     cpa-quota-guard:
-      version: 0.3.1
+      version: 0.3.2
       enabled: true
       priority: 0
       mode: observe

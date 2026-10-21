@@ -1,6 +1,6 @@
 # CPA 额度保护
 
-独立的 CPA 原生 Go C ABI 插件，为显式白名单账号保留额度。当前 `0.3.1`，Linux amd64，ABI 1、RPC schema 6；宿主最低接口基线为 CPA v8.0.33 / `2422c6b`。它不生成模型请求，不管理预热计划，可单独安装，也可与 [cpa-warmup](https://github.com/haroldlabadie/cpa-warmup) 同时运行。
+独立的 CPA 原生 Go C ABI 插件，为显式白名单账号保留额度。当前 `0.3.2`，Linux amd64，ABI 1、RPC schema 6；宿主最低接口基线为 CPA v8.0.33 / `2422c6b`。它不生成模型请求，不管理预热计划，可单独安装，也可与 [cpa-warmup](https://github.com/haroldlabadie/cpa-warmup) 同时运行。
 
 ## 行为
 
@@ -16,11 +16,11 @@
 
 ## 安装
 
-下载对应版本的 `cpa-quota-guard_0.3.1_linux_amd64.zip`，按同 Release 的 `checksums.txt` 校验；包内另含 `BINARY_SHA256SUMS`。zip 根目录只有一个 `.so`，兼容 CPA Plugin Store。`.so` 和数据目录放入 CPA 插件挂载目录，勿覆盖其他插件。
+下载对应版本的 `cpa-quota-guard_0.3.2_linux_amd64.zip`，按同 Release 的 `checksums.txt` 校验；包内另含 `BINARY_SHA256SUMS`。zip 根目录只有一个 `.so`，兼容 CPA Plugin Store。`.so` 和数据目录放入 CPA 插件挂载目录，勿覆盖其他插件。
 
 ```sh
 install -d -m 0700 /CLIProxyAPI/plugins/cpa-quota-guard-data
-install -m 0644 cpa-quota-guard.so /CLIProxyAPI/plugins/cpa-quota-guard-v0.3.1.so
+install -m 0644 cpa-quota-guard.so /CLIProxyAPI/plugins/cpa-quota-guard-v0.3.2.so
 install -m 0600 settings.example.json /CLIProxyAPI/plugins/cpa-quota-guard-data/settings.json
 ```
 
@@ -36,7 +36,7 @@ plugins:
   dir: /CLIProxyAPI/plugins
   configs:
     cpa-quota-guard:
-      version: 0.3.1
+      version: 0.3.2
       enabled: true
       priority: 0
       mode: observe

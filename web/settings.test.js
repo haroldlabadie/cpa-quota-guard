@@ -35,7 +35,7 @@ test("manual Key stays in memory; save includes If-Match and edited fields", asy
   const a = app(); a.get("manualKey").value = "FAKE_ADMIN"; a.get("manualConnect").onclick();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(a.get("manualKey").value, "");
-  const row = a.get("rules").children[0]; const reserve = row.children[4].children[1].children[0]; reserve.value = "12"; reserve.oninput();
+  const row = a.get("rules").children[0]; const reserve = row.children[4].children[0].children[1].children[0]; reserve.value = "12"; reserve.oninput();
   await a.get("save").onclick(); const put = a.requests.find(r => r.options.method === "PUT");
   assert.equal(put.options.headers["If-Match"], '"r1"'); assert.equal(JSON.parse(put.options.body).rules[0].reserve_five_hour, 12);
   assert.equal(put.options.headers.Authorization, "Bearer FAKE_ADMIN");
@@ -73,13 +73,17 @@ test("rule order is provider, account, scope, thresholds; all dropdowns are cust
   const a = app(); a.get("manualKey").value = "FAKE_ADMIN"; a.get("manualConnect").onclick(); await new Promise(r => setImmediate(r));
   const row = a.get("rules").children[0];
   assert.deepEqual(row.children.map(child => child.className.split(" ").filter(Boolean)), [
-    ["rule-field", "provider-field"], ["rule-field", "account"], ["rule-field", "scope-field"], ["rule-field", "switch-field"], ["rule-field", "number", "five"], ["rule-field", "number", "weekly"], ["rule-field", "actions"]
+    ["rule-field", "provider-field"], ["rule-field", "account"], ["rule-field", "scope-field"], ["rule-field", "switch-field"], ["thresholds"], ["rule-field", "actions"]
   ]);
   assert.equal(row.children[0].children[0].textContent, "供应商");
   assert.equal(row.children[1].children[0].textContent, "账号");
   assert.equal(row.children[2].children[0].textContent, "保护模型组");
-  assert.equal(row.children[4].children[0].textContent, "五小时保留");
-  assert.equal(row.children[5].children[0].textContent, "每周保留");
+  const thresholds = row.children[4];
+  assert.equal(thresholds.children.length, 2);
+  assert.equal(thresholds.children[0].children[0].textContent, "五小时保留");
+  assert.equal(thresholds.children[1].children[0].textContent, "每周保留");
+  assert.equal(thresholds.children[0].className, "rule-field number five");
+  assert.equal(thresholds.children[1].className, "rule-field number weekly");
   assert.equal(row.children[0].children[1].children[0].className, "select-button");
   assert.equal(row.children[1].children[1].children[0].className, "select-button");
   assert.equal(row.children[2].children[1].children[0].className, "select-button");
@@ -116,10 +120,14 @@ test("catalog drives provider and model group choices", async () => {
   const a = app(); a.get("manualKey").value = "FAKE_ADMIN"; a.get("manualConnect").onclick(); await new Promise(r => setImmediate(r)); const row = a.get("rules").children[0]; const provider = row.children[0].children[1].children[0]; assert.equal(pickerOptions(provider)[1].children[0].children[0].textContent, "Antigravity"); assert.equal(a.requests.some(r => r.url.endsWith("/catalog")), true);
 });
 
-test("threshold inputs expose their units", () => {
+test("threshold inputs expose their units and share a 56px control height", () => {
   const html = fs.readFileSync(__dirname + "/settings.html", "utf8");
   assert.match(html, /\.rule-field-label\{display:block/);
   assert.match(html, /\.number-input>span/);
+  assert.match(html, /\.select-button\{[^}]*height:56px/);
+  assert.match(html, /\.number-input\{[^}]*height:56px/);
+  assert.match(html, /\.thresholds\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(html, /\.number-input \.cell-input\{[^}]*border:0/);
 });
 
 test("main settings page never exposes a management token control", () => {
